@@ -2,6 +2,13 @@
 
 Generate 'molecular CVs' of common chemical properties
 
+## Notes
+
+- For Lilly MedChem rules, the Lilly code rejects some atoms without providing a demerit number.
+  - My code gives these all demerits of `default_demerits` and sets their status to `Hard reject`.
+  - Molecules with demerit scores are given a status of `Reject`
+  - Molecules which pass are given a status of `Pass`
+
 ## Data sets used
 
 - logD from [RTlogD](https://github.com/WangYitian123/RTlogD)
