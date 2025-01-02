@@ -6,6 +6,7 @@ import os
 import re
 import sys
 import subprocess
+# pylint: disable=c-extension-no-member
 from rdkit.Chem import rdMolDescriptors
 from rdkit.Chem import MolToSmiles
 
@@ -57,11 +58,11 @@ def _smiles_to_lilly_lines(smiles):
     with (tempfile.NamedTemporaryFile(suffix=".smi") as input_f,
           tempfile.TemporaryDirectory() as tmp_dir):
         with open(input_f.name, 'w', encoding="utf8") as fh:
-            fh.write("\n".join(smiles) + "\n")
+            fh.write("\n".join(smiles))
         args = ["ruby", "Lilly_Medchem_Rules.rb","-B",
                 os.path.join(tmp_dir,"bad"),input_f.name,]
         output = subprocess.check_output(args,cwd=lilly_dir).decode(sys.stdout.encoding)
-        good_lines = output.split("\n")
+        good_lines = [g.strip() for g in output.split("\n")]
         good_lines = [g for g in good_lines if len(g) > 0]
         bad_lines = []
         for smi_file in [os.path.join(tmp_dir,f"bad{i}.smi") for i in [0,1,2,3]]:
@@ -92,7 +93,7 @@ def _smiles_to_lilly_dict(smiles,default_demerits=100):
         else:
             b["Status"] = "Reject"
     dict_combined =  { list_v["SMILES"]:list_v for list_v in (good_dict + bad_dict)}
-    return dict_combined
+    return [dict_combined[s] if s in dict_combined else {} for s in smiles]
 
 def _mols_to_lilly(mols):
     """
