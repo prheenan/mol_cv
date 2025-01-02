@@ -4,7 +4,8 @@ Unit tests for molecular CV
 import unittest
 import pandas
 import numpy as np
-from rdkit.Chem import MolFromSmiles
+from rdkit.Chem import MolFromSmiles, Descriptors, MolToInchi
+from rdkit import RDLogger
 import mol_cv
 
 
@@ -29,8 +30,10 @@ class MyTestCase(unittest.TestCase):
         set up the common data sets used for testing
         """
         cls.fda = pandas.read_csv("./data/fda.csv")
+        RDLogger.DisableLog('rdApp.*')
         cls.fda["smiles"] = cls.fda["smiles"].transform(mol_cv.normalize_smiles)
         cls.fda["mol"] = cls.fda["smiles"].transform(MolFromSmiles)
+        RDLogger.EnableLog('rdApp.*')
         cls.fda.drop_duplicates("smiles",ignore_index=True,inplace=True)
         cls.fda.dropna(subset="smiles",inplace=True,ignore_index=True)
         cls.fda.dropna(subset="mol",inplace=True,ignore_index=True)
@@ -53,35 +56,62 @@ class MyTestCase(unittest.TestCase):
     def test_lilly(self):
         """
         Test the lily scoring routine
+
+        Note in rare cases (<2% of test set), the Lilly code will return
+        an alternate version of the SMILES which
+
+        For example, giving
+
+        NC(N)=NC(=O)c1nc(Cl)c(N)nc1N
+
+        as input to lill will result in it outputting
+
+        NC(=N)NC(=O)C1=NC(Cl)=C(N)N=C1N
+
+        This molecule has a hydrogen moved, but is otherwise the same (the inchi match)
         """
+        RDLogger.DisableLog('rdApp.*')
         # read in the fda approved drugs
-        mols = MyTestCase.fda["mol"]
         smiles = MyTestCase.fda["smiles"]
-        lilly_output = mol_cv._mols_to_lilly(mols=mols)
-        smiles_match = [l["SMILES"] == s for l, s in zip(lilly_output, smiles)]
+        lilly_output = mol_cv._smiles_to_lilly(smiles=smiles)
+        lilly_output_dict = { l["SMILES"]:l for l in lilly_output}
         self.i_subtest = 0
-        # make sure all the SMILES match
         with self.subTest(i=self.i_subtest):
-            assert len(smiles_match) == len(smiles)
-            self.i_subtest += 1
+            fraction_match = sum(l["SMILES"] == s for l, s in zip(lilly_output, smiles)) / len(smiles)
+            # lilly will sometimes modify the smiles a little
+            assert fraction_match > 0.98
+        self.i_subtest += 1
+        mol_expect = MyTestCase.fda["mol"]
+        mol_found = [MolFromSmiles(l["SMILES"]) for l in lilly_output]
+        # make sure the molecular weights all match (even if the SMILES
+        # are different -- a good example would be
+        with self.subTest(i=self.i_subtest):
+            np.testing.assert_allclose([Descriptors.ExactMolWt(m) for m in mol_expect],
+                                       [Descriptors.ExactMolWt(m) for m in mol_found])
+        self.i_subtest += 1
+        # make sure the inchi match (checking the mass is redundant, but I am paranoid)
+        with self.subTest(i=self.i_subtest):
+            assert [MolToInchi(i) for i in mol_expect] == [MolToInchi(i) for i in mol_found]
+        self.i_subtest += 1
         # spot check a few that I did by hand on 2025-01-02
         mol_demerits_explanation = [ \
-            ['CC(C)n1c(/C=C/[C@H](O)C[C@H](O)CC(=O)O)c(-c2ccc(F)cc2)c2ccccc21',33,'too_many_atoms'],
+            ['CC(C)n1c(/C=C/[C@H](O)C[C@H](O)CC(=O)O)c(-c2ccc(F)cc2)c2ccccc21',33,
+             'too_many_atoms'],
             ['C[C@@H](CCc1ccc(O)cc1)NCCc1ccc(O)c(O)c1',150,"catechol"],
             ['Cn1cc[nH]c1=S',30,'thiocarbonyl_aromatic']
         ]
-        lilly_output_dict = { l["SMILES"]:l for l in lilly_output}
         for smi, demerits,explanation in mol_demerits_explanation:
-            with self.subTest(i=self.i_subtest,msg=f"{smi} found"):
+            with self.subTest(i=self.i_subtest,msg="Found"):
                 assert smi in lilly_output_dict
             self.i_subtest += 1
             output = lilly_output_dict[smi]
-            with self.subTest(i=self.i_subtest,msg=f"{smi} demerits {demerits}"):
+            with self.subTest(i=self.i_subtest,msg=f"Demerits {demerits}"):
                 assert output["Demerits"] == demerits, output["Demerits"]
             self.i_subtest += 1
-            with self.subTest(i=self.i_subtest,msg=f"{smi} explanation {explanation}"):
+            with self.subTest(i=self.i_subtest,msg=f"Explanation {explanation}"):
                 assert output["Explanation"] == explanation, output["Explanation"]
             self.i_subtest += 1
+    RDLogger.EnableLog('rdApp.*')
 
 if __name__ == '__main__':
     unittest.main()

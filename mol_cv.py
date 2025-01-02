@@ -7,7 +7,8 @@ import re
 import sys
 import subprocess
 # pylint: disable=c-extension-no-member
-from rdkit.Chem import rdMolDescriptors, CanonSmiles, MolToSmiles, MolFromSmiles
+from rdkit.Chem import (rdMolDescriptors, Descriptors,CanonSmiles,
+                        MolToSmiles, MolFromSmiles)
 from rdkit.Chem.rdmolops import Kekulize
 
 pattern_demerits = re.compile(pattern=r"""
@@ -115,15 +116,13 @@ def _smiles_to_lilly_dict(smiles,default_demerits=100):
     assert len(set(d["id"] for d in all_dicts_ordered)) == len(all_dicts_ordered)
     return all_dicts_ordered
 
-def _mols_to_lilly(mols):
+def _smiles_to_lilly(smiles):
     """
 
-    :param mols: list of rdkit molecule objects, size N
+    :param smiles: list of smiles to pass to lilly
     :return: list of dictionaries, size N, one per molecule
     """
-    smiles = [MolToSmiles(m) for m in mols]
-    dict_v = _smiles_to_lilly_dict(smiles)
-    return dict_v
+    return _smiles_to_lilly_dict(smiles)
 
 def _name_to_funcs():
     """
@@ -142,7 +141,7 @@ def _name_to_funcs():
     return {
          "H-bond donors":rdMolDescriptors.CalcNumHBD,
          "H-bond acceptors":rdMolDescriptors.CalcNumHBA,
-         "Exact mass": rdMolDescriptors.ExactMolWt,
+         "Exact mass": Descriptors.ExactMolWt,
          "Heavy atom count": rdMolDescriptors.CalcNumHeavyAtoms,
          "Topological polar surface area":rdMolDescriptors.CalcTPSA,
          "Rotatable bonds":rdMolDescriptors.CalcNumRotatableBonds,
