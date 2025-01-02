@@ -24,3 +24,10 @@ repos:
           "-rn", # Only display messages
           '--extension-pkg-allow-list=rdkit.Chem.rdMolDescriptors'
         ]
+    - id: pytest
+      name: pytest
+      entry: python test.py
+      language: system
+      types: [ python ]
+      pass_filenames: false
+      always_run: false

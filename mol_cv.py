@@ -13,6 +13,7 @@ from rdkit.Chem.rdmolops import Kekulize
 pattern_demerits = re.compile(pattern=r"""
                 ^
                 (?P<SMILES>.+?) # this is the SMILES
+                \s+PRH_(?P<id>\d{12}) # this is the id
                 (
                 \s+:\sD\( # demerit string must be proceeded by ' : D\('
                 (?P<demerits>\d+) # demerit is just the number
@@ -20,13 +21,14 @@ pattern_demerits = re.compile(pattern=r"""
                 )?
                 (\s+\(?
                 (?P<explanations>.+?)  # explanation must be proceeded by whitespace
+                :?# optional ending colon which we don't want to capture
                 )?
                 \)?
                 \s*
                 $ # must match to the end
                 """,flags=re.VERBOSE)
 
-def _normalize_smile(smile):
+def normalize_smiles(smile):
     """
     Kekulize form especially important for Lilly, see quote/URL below
     https://github.com/IanAWatson/Lilly-Medchem-Rules/issues/3#issuecomment-329043633
@@ -40,16 +42,6 @@ def _normalize_smile(smile):
     mol = MolFromSmiles(CanonSmiles(smile))
     Kekulize(mol, clearAromaticFlags=True)
     return CanonSmiles(MolToSmiles(mol))
-
-def normalize_smiles(smiles):
-    """
-
-    :param smiles: smiles to normalize
-    :return: list of normalized smiles
-    """
-    # for our purposes, ignore aromaticssee also
-    # https://pubs.rsc.org/en/content/articlehtml/2023/dd/d3dd00039g
-    return [_normalize_smile(s) for s in smiles]
 
 def _parse_lilly_line_to_dict(l):
     """
@@ -67,8 +59,9 @@ def _parse_lilly_line_to_dict(l):
         demerits_int = 0
     assert l.split(" ")[0] == matched.group("SMILES")
     explanation = matched.group("explanations")
-    row = { "Original output":l,
-            "SMILES":_normalize_smile(matched.group("SMILES")),
+    row = { "id":int(matched.group("id")),
+            "Original output":l,
+            "SMILES":normalize_smiles(matched.group("SMILES")),
             "Demerits": demerits_int,
             "Explanation": explanation}
     return row
@@ -76,14 +69,14 @@ def _parse_lilly_line_to_dict(l):
 def _smiles_to_lilly_lines(smiles):
     """
 
-    :param smiles: smles of interest
+    :param smiles: smles of interest, list, length N
     :return:  tuple of <lilly lines passing, lilly lines failing>
     """
     lilly_dir = os.path.join(os.path.dirname(__file__),"lib/Lilly-Medchem-Rules/")
     with (tempfile.NamedTemporaryFile(suffix=".smi") as input_f,
           tempfile.TemporaryDirectory() as tmp_dir):
         with open(input_f.name, 'w', encoding="utf8") as fh:
-            fh.write("\n".join(smiles))
+            fh.write("\n".join([f"{s} PRH_{i:012d}" for i,s in enumerate(smiles)]))
         args = ["ruby", "Lilly_Medchem_Rules.rb","-B",
                 os.path.join(tmp_dir,"bad"),input_f.name,]
         output = subprocess.check_output(args,cwd=lilly_dir).decode(sys.stdout.encoding)
@@ -117,8 +110,10 @@ def _smiles_to_lilly_dict(smiles,default_demerits=100):
             b["Demerits"] = default_demerits
         else:
             b["Status"] = "Reject"
-    dict_combined =  { list_v["SMILES"]:list_v for list_v in (good_dict + bad_dict)}
-    return [dict_combined[s] if s in dict_combined else {} for s in smiles]
+    all_dicts_ordered = sorted((good_dict + bad_dict), key=lambda x: x["id"])
+    assert len(all_dicts_ordered) == len(smiles)
+    assert len(set(d["id"] for d in all_dicts_ordered)) == len(all_dicts_ordered)
+    return all_dicts_ordered
 
 def _mols_to_lilly(mols):
     """
