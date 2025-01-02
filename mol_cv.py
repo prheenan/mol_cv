@@ -7,8 +7,8 @@ import re
 import sys
 import subprocess
 # pylint: disable=c-extension-no-member
-from rdkit.Chem import rdMolDescriptors
-from rdkit.Chem import MolToSmiles
+from rdkit.Chem import rdMolDescriptors, CanonSmiles, MolToSmiles, MolFromSmiles
+from rdkit.Chem.rdmolops import Kekulize
 
 pattern_demerits = re.compile(pattern=r"""
                 ^
@@ -25,6 +25,31 @@ pattern_demerits = re.compile(pattern=r"""
                 \s*
                 $ # must match to the end
                 """,flags=re.VERBOSE)
+
+def _normalize_smile(smile):
+    """
+    Kekulize form especially important for Lilly, see quote/URL below
+    https://github.com/IanAWatson/Lilly-Medchem-Rules/issues/3#issuecomment-329043633
+    "Generally you will be better off using Kekule forms in files,
+    and just compute aromaticity in programs ... We do not recommend using aromatic smiles."
+
+    note that kekulize is in place
+
+    :param smile: smile to use
+    """
+    mol = MolFromSmiles(CanonSmiles(smile))
+    Kekulize(mol, clearAromaticFlags=True)
+    return CanonSmiles(MolToSmiles(mol))
+
+def normalize_smiles(smiles):
+    """
+
+    :param smiles: smiles to normalize
+    :return: list of normalized smiles
+    """
+    # for our purposes, ignore aromaticssee also
+    # https://pubs.rsc.org/en/content/articlehtml/2023/dd/d3dd00039g
+    return [_normalize_smile(s) for s in smiles]
 
 def _parse_lilly_line_to_dict(l):
     """
@@ -43,7 +68,7 @@ def _parse_lilly_line_to_dict(l):
     assert l.split(" ")[0] == matched.group("SMILES")
     explanation = matched.group("explanations")
     row = { "Original output":l,
-            "SMILES":matched.group("SMILES"),
+            "SMILES":_normalize_smile(matched.group("SMILES")),
             "Demerits": demerits_int,
             "Explanation": explanation}
     return row

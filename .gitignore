@@ -1,4 +1,5 @@
 # PRH ignores
+examples/iframe_figures/*
 .idea/*
 **.DS_Store
 # Byte-compiled / optimized / DLL files

@@ -4,9 +4,11 @@ Unit tests for molecular CV
 import unittest
 import pandas
 import numpy as np
-from rdkit.Chem import MolFromSmiles, MolToSmiles
-from rdkit.Chem.rdmolops import Kekulize
+from rdkit.Chem import MolFromSmiles
 import mol_cv
+
+
+
 class MyTestCase(unittest.TestCase):
     """
     Unit tests
@@ -17,12 +19,8 @@ class MyTestCase(unittest.TestCase):
         set up the common data sets used for testing
         """
         cls.fda = pandas.read_csv("./data/fda.csv")
-        # for our purposes, ignore aromaticssee also
-        # https://pubs.rsc.org/en/content/articlehtml/2023/dd/d3dd00039g
+        cls.fda["smiles"] = cls.fda["smiles"].transform(mol_cv._normalize_smile)
         cls.fda["mol"] = cls.fda["smiles"].transform(MolFromSmiles)
-        # kekulize is in place
-        cls.fda["mol"].transform(lambda m: Kekulize(m,clearAromaticFlags=True))
-        cls.fda["smiles"] = cls.fda["mol"].transform(MolToSmiles)
         cls.fda.drop_duplicates("smiles",ignore_index=True,inplace=True)
         cls.fda.dropna(subset="smiles",inplace=True,ignore_index=True)
         cls.fda.dropna(subset="mol",inplace=True,ignore_index=True)
