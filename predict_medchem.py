@@ -8,22 +8,22 @@ TBD:
 - LogP
 - LogS
 """
-
+from collections import Counter
 import pandas
 from tqdm import tqdm
 import numpy as np
 from rdkit.Chem import rdFingerprintGenerator
-from sklearn.model_selection import GroupKFold, GridSearchCV, train_test_split
-import xgboost as xgb
 # could consider umap instead?
 # http://practicalcheminformatics.blogspot.com/2024/11/some-thoughts-on-splitting-chemical.html
 # https://greglandrum.github.io/rdkit-blog/posts/2023-03-02-clustering-conformers.html
 from rdkit.ML.Cluster import Butina
 from rdkit import DataStructs
+from sklearn.model_selection import GroupKFold, GridSearchCV, train_test_split
+import xgboost as xgb
 
 np.random.seed(42)
 
-def get_generator_error(mols,pka,ids,label, generator, fingerprint_size):
+def get_generator_error(mols,pka,ids,label, generator, fingerprint_size,**kw):
     """
 
     :param mols: list, N, of moleclules
@@ -35,8 +35,9 @@ def get_generator_error(mols,pka,ids,label, generator, fingerprint_size):
     :return: list, size K, each element a tuple of errors dataframe  and grid
     """
     grid, _, _, _, _, _, _ = fit(mols, pka, radius=2,
-                                 fingerprint_size=fingerprint_size, params=None,
-                                 n_jobs=-2, generator=generator, groups=ids)
+                                 fingerprint_size=fingerprint_size,
+                                 n_jobs=-2, generator=generator, groups=ids,
+                                 **kw)
     df_errors = flatten_errors(grid)
     df_errors["bits"] = fingerprint_size
     df_errors["fp_type"] = label
@@ -146,6 +147,19 @@ def cross_validate(X,y,groups,params,n_folds,validation_size,n_jobs):
     grid.fit(X=X_train, y=y_train, groups=groups_train)
     return grid, X_train, X_test, y_train, y_test, groups_train, groups_test
 
+def _sanitize_generator(generator,radius,fingerprint_size):
+    if generator is rdFingerprintGenerator.GetRDKitFPGenerator:
+        fp_generator = generator(maxPath=2 * radius, fpSize=fingerprint_size)
+    elif generator is rdFingerprintGenerator.GetAtomPairGenerator:
+        fp_generator = generator(maxDistance=2 * radius,
+                                 fpSize=fingerprint_size)
+    elif generator is rdFingerprintGenerator.GetTopologicalTorsionGenerator:
+        fp_generator = generator(torsionAtomCount=radius,
+                                 fpSize=fingerprint_size)
+    else:
+        fp_generator = generator(radius=radius, fpSize=fingerprint_size)
+    return fp_generator
+
 def fit(mols, pka, radius=2, fingerprint_size=512, n_jobs=None, params=None,
         generator=rdFingerprintGenerator.GetMorganGenerator, groups=None,
         n_folds=10, validation_size=0.1):
@@ -165,18 +179,9 @@ def fit(mols, pka, radius=2, fingerprint_size=512, n_jobs=None, params=None,
     :return: grid, X_train, X_test, y_train, y_test, groups_train, groups_test
     """
     if params is None:
-        params = {'max_depth': [1, 2, 3, 4],
+        params = {'max_depth': [1, 2, 3],
                   'n_estimators': [2, 10, 50, 100, 200]}
-    if generator is rdFingerprintGenerator.GetRDKitFPGenerator:
-        fp_generator = generator(maxPath=2 * radius, fpSize=fingerprint_size)
-    elif generator is rdFingerprintGenerator.GetAtomPairGenerator:
-        fp_generator = generator(maxDistance=2 * radius,
-                                 fpSize=fingerprint_size)
-    elif generator is rdFingerprintGenerator.GetTopologicalTorsionGenerator:
-        fp_generator = generator(torsionAtomCount=radius,
-                                 fpSize=fingerprint_size)
-    else:
-        fp_generator = generator(radius=radius, fpSize=fingerprint_size)
+    fp_generator = _sanitize_generator(generator, radius, fingerprint_size)
     return cross_validate(X=_mol_to_fingerprints(mols,fp_generator), y=pka,
                           groups=groups, params=params, n_folds=n_folds,
                           validation_size=validation_size, n_jobs=n_jobs)
@@ -202,41 +207,108 @@ def flatten_errors(grid):
     df_cat = pandas.concat(df_to_cat)
     return df_cat
 
-def cluster(mols,fpSize,cutoff):
+def cluster(mols,fingerprint_size,cutoff,generator=None):
     """
 
     :param mols: see get_generator_error
-    :param fpSize: see get_generator_error
+    :param fingerprint_size: see get_generator_error
     :param cutoff: see get_generator_error
     :return: list of ids corresponding to molecules
     """
-    fp_generator = rdFingerprintGenerator.GetMorganGenerator(radius=2,fpSize=fpSize)
+    if generator is None:
+        generator = rdFingerprintGenerator.GetMorganGenerator
+    fp_generator = _sanitize_generator(generator, radius=2,
+                                       fingerprint_size=fingerprint_size)
     fingerprints = list(mols.transform(fp_generator.GetFingerprint))
     ids = cluster_ids(fingerprints,cutoff=cutoff)
     return ids
 
-def compare_fingerprints(mols,pka,ids):
+def _all_names_and_generators():
+    return [
+        ['ttgen', rdFingerprintGenerator.GetTopologicalTorsionGenerator],
+        ['apgen', rdFingerprintGenerator.GetAtomPairGenerator],
+        ["mgngen", rdFingerprintGenerator.GetMorganGenerator],
+        ['rdkgen', rdFingerprintGenerator.GetRDKitFPGenerator]
+    ]
+
+def cluster_stats(mols,n_points=20,fingerprint_size=None,
+                  disable_tqdm=False,**kw):
+    """
+
+    :param mols: length N list of molecules
+    :param n_points:  number of points for cutoff
+    :param fingerprint_size: list length M of fingerprint sies
+    :param disable_tqdm:  if true disble tqdm
+    :param kw:  keywords
+    :return:  list of stats to plot for clustering
+    """
+    if fingerprint_size is None:
+        fingerprint_size = [512]
+    kws = []
+    for fp_size in fingerprint_size:
+        for cutoff in np.linspace(0, 1, endpoint=True, num=n_points):
+            kws.append({"fingerprint_size": fp_size, "cutoff": cutoff,**kw})
+    all_ids_kw = []
+    for kw_tmp in tqdm(kws,disable=disable_tqdm):
+        all_ids_kw.append([cluster(mols, **kw_tmp), kw_tmp])
+    rows = []
+    df_sizes = []
+    for ids, kw_other in all_ids_kw:
+        sizes = list(Counter(ids).values())
+        row_stats = {"Number of groups": len(set(ids)),
+                     "Group size mean": np.mean(sizes),
+                     "Group size stdev": np.std(sizes), **kw_other}
+        rows.append(row_stats)
+        df_sizes.append(pandas.DataFrame({"Group size": sizes, **row_stats}))
+    df_cat_sizes = pandas.concat(df_sizes)
+    return df_cat_sizes
+
+
+def compare_fingerprints(mols,pka,ids,generators=None,
+                         fingerprint_size=None,**kw):
     """
 
     :param mols: see get_generator_error
     :param pka: see get_generator_error
     :param ids: see get_generator_error
-    :return:
+    :param generators: list of genertaor objects from rdFingerprintGenerator
+    :param fingerprint_size: list of fingerprint sizes to use:
+    :param kw: passed directly to get_generator_error
+    :return: list of length (<fingerprint_size> X generators), each element
+    an output of get_generator_error
     """
-    generators = [
-        ['ttgen', rdFingerprintGenerator.GetTopologicalTorsionGenerator],
-        ['apgen', rdFingerprintGenerator.GetAtomPairGenerator],
-        ["mgngen", rdFingerprintGenerator.GetMorganGenerator],
-        ['rdkgen', rdFingerprintGenerator.GetRDKitFPGenerator],
-    ]
+    if generators is None:
+        generators = _all_names_and_generators()
+    if fingerprint_size is None:
+        fingerprint_size = [256, 512, 1024]
     kws_error = []
     for label, generator in generators:
-        for fingerprint_size in [128, 256,512,1024]:
+        for fp_size in fingerprint_size:
             kws_error.append({"label": label, "generator": generator,
-                              "fingerprint_size": fingerprint_size})
+                              "fingerprint_size": fp_size})
 
     errors_and_grid_array = []
-    for kw in tqdm(kws_error):
-        errors_grid = get_generator_error(mols=mols,pka=pka,ids=ids,**kw)
+    for kw_common in tqdm(kws_error):
+        errors_grid = get_generator_error(mols=mols,pka=pka,ids=ids,**(kw_common | kw))
         errors_and_grid_array.append(errors_grid)
     return errors_and_grid_array
+
+def fit_clustered_model(mols,pka,njobs=-2,fingerprint_size = 1024,
+                        cutoff = 0.6,radius = 2,
+                        generator=rdFingerprintGenerator.GetMorganGenerator,
+                        **kw):
+    """
+
+    :param mols: molecules, length N
+    :param pka: y values, length N
+    :param njobs:  number of jobs
+    :param fingerprint_size: fingerprint size
+    :param cutoff:for clustering
+    :param radius:
+    :param kw:
+    :return:
+    """
+    ids = cluster(mols=mols,fingerprint_size=fingerprint_size,
+                  cutoff=cutoff,generator=generator)
+    return fit(mols, pka, radius=radius,fingerprint_size=fingerprint_size,
+               n_jobs=njobs, generator=generator,groups=ids,**kw)

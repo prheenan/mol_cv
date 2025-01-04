@@ -7,9 +7,8 @@ import re
 import sys
 import subprocess
 # pylint: disable=c-extension-no-member
-from rdkit.Chem import (rdMolDescriptors, Descriptors,CanonSmiles,
-                        MolToSmiles, MolFromSmiles)
-from rdkit.Chem.rdmolops import Kekulize
+from rdkit.Chem import (rdMolDescriptors, Descriptors)
+from utilities import normalize_smiles
 
 pattern_demerits = re.compile(pattern=r"""
                 ^
@@ -29,20 +28,7 @@ pattern_demerits = re.compile(pattern=r"""
                 $ # must match to the end
                 """,flags=re.VERBOSE)
 
-def normalize_smiles(smile):
-    """
-    Kekulize form especially important for Lilly, see quote/URL below
-    https://github.com/IanAWatson/Lilly-Medchem-Rules/issues/3#issuecomment-329043633
-    "Generally you will be better off using Kekule forms in files,
-    and just compute aromaticity in programs ... We do not recommend using aromatic smiles."
 
-    note that kekulize is in place
-
-    :param smile: smile to use
-    """
-    mol = MolFromSmiles(CanonSmiles(smile))
-    Kekulize(mol, clearAromaticFlags=True)
-    return CanonSmiles(MolToSmiles(mol))
 
 def _parse_lilly_line_to_dict(l):
     """

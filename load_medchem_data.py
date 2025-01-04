@@ -7,6 +7,9 @@ import numpy as np
 import pandas
 from rdkit import Chem
 
+import utilities
+
+
 def load_pka():
     """
 
@@ -27,6 +30,8 @@ def load_pka():
     pKa1_median = pKa1_temp[["InChI", "pka_value"]].groupby(
         "InChI").median().reset_index()
     pKa1_median["mol"] = pKa1_median["InChI"].transform(Chem.MolFromInchi)
+    for m in pKa1_median["mol"]:
+        utilities.normalize_mol_inplace(m)
     pKa1_median.dropna(subset="mol", inplace=True, ignore_index=True)
     pKa1_median.dropna(subset="pka_value", inplace=True, ignore_index=True)
     return pKa1_median
