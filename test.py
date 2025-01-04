@@ -77,9 +77,9 @@ class MyTestCase(unittest.TestCase):
         lilly_output_dict = { l["SMILES"]:l for l in lilly_output}
         self.i_subtest = 0
         with self.subTest(i=self.i_subtest):
-            fraction_match = sum(l["SMILES"] == s for l, s in zip(lilly_output, smiles)) / len(smiles)
+            f_match = sum(l["SMILES"] == s for l, s in zip(lilly_output, smiles)) / len(smiles)
             # lilly will sometimes modify the smiles a little
-            assert fraction_match > 0.98
+            assert f_match > 0.98
         self.i_subtest += 1
         mol_expect = MyTestCase.fda["mol"]
         mol_found = [MolFromSmiles(l["SMILES"]) for l in lilly_output]
