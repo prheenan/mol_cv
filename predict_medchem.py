@@ -8,6 +8,9 @@ TBD:
 - LogP
 - LogS
 """
+import os
+import tempfile
+import json
 from collections import Counter
 import pandas
 from tqdm import tqdm
@@ -20,8 +23,113 @@ from rdkit.ML.Cluster import Butina
 from rdkit import DataStructs
 from sklearn.model_selection import GroupKFold, GridSearchCV, train_test_split
 import xgboost as xgb
-
+import load_medchem_data
 np.random.seed(42)
+
+class FittedModel:
+    """
+    Convenience class to save all the information needed to predict
+    values from a molecule
+    """
+    def __init__(self, estimator=None, fingerprint_size=None, radius=None,
+                 generator=None, **kw):
+        """
+
+        :param estimator:  xgb.Regresor object
+        :param fingerprint_size: fingerprint size
+        :param radius: radius
+        """
+        self.estimator = estimator
+        self.fingerprint_size = fingerprint_size
+        self.radius = radius
+        self.generator = generator
+        # make sure the generator function works
+        for k, v in kw.items():
+            setattr(self, k, v)
+
+    def load_model(self, file_name):
+        """
+
+        :param file_name: previously saved model
+        :return: this model with properties set
+        """
+        with open(file_name, 'r', encoding="utf8") as fh:
+            original_dict = json.load(fh)
+        # save_model or save_raw needed, but I can't get save_raw to work. A kludge!
+        # have to load the full model from the json string
+        with tempfile.NamedTemporaryFile(suffix=".json") as f_tmp_out:
+            # save the model to a file
+            with open(f_tmp_out.name, 'w', encoding="utf8") as f_read:
+                json.dump(original_dict["estimator"], f_read)
+            # read it back in using the standard interface
+            model = xgb.XGBRegressor()
+            model.load_model(fname=f_tmp_out.name)
+            original_dict["estimator"] = model
+        for k, v in original_dict.items():
+            setattr(self, k, v)
+        return self
+
+    def save_model(self, file_name):
+        """
+
+        :param file_name: where to save model
+        :return:  nothing
+        """
+        # save_model or save_raw needed, but I can't get save_raw to work. A kludge!
+        with tempfile.NamedTemporaryFile(suffix=".json") as f_tmp_out:
+            self.estimator.save_model(f_tmp_out.name)
+            with open(f_tmp_out.name, 'r', encoding="utf8") as f_read:
+                model_as_string = json.load(f_read)
+        # save out all the attributes
+        output_dict = {}
+        for k, v in self.__dict__.items():
+            if k != "estimator":
+                output_dict[k] = v
+        output_dict["estimator"] = model_as_string
+        with open(file_name, 'w', encoding="utf8") as fh:
+            json.dump(output_dict, fh)
+
+    def get_generator_function(self):
+        """
+
+        :return: fingerprint generator (fp_generator) given by self.generator
+        string value
+        """
+        all_generators = _all_names_and_generators()
+        this_generator = [list_v for list_v in all_generators
+                          if list_v[0] == self.generator]
+        if len(this_generator) != 1:
+            raise ValueError(f"Didn't understand generator {self.generator}")
+        _, gen = this_generator[0]
+        return _sanitize_generator(gen, radius=self.radius,
+                                   fingerprint_size=self.fingerprint_size)
+
+    def predict_mols(self, mols):
+        """
+
+        :param mols: list, length N, of molecules
+        :return: list, length N, of predictions
+        """
+        fp_generator = self.get_generator_function()
+        X = _mol_to_fingerprints(mols=mols,fp_generator=fp_generator)
+        return self.predict(X)
+
+    @property
+    def best_estimator_(self):
+        """
+
+        :return: estimator. used for compatibility with grid.
+        """
+        return self.estimator
+
+    def predict(self,X):
+        """
+
+        :param X: x values that estimator expect (i.e., fingerprints)
+        :return: output of estimator.predict
+        """
+        return self.estimator.predict(X)
+
 
 def get_generator_error(mols,pka,ids,label, generator, fingerprint_size,**kw):
     """
@@ -57,10 +165,10 @@ def distances(fp_list):
     # see https://github.com/PatWalters/workshop/blob/master/clustering/taylor_butina.ipynb
     dists = []
     nfps = len(fp_list)
-    for i in range(1, nfps):
+    for i in tqdm(range(1, nfps),desc="Getting distances"):
         # pylint: disable=no-member
         sims = DataStructs.BulkTanimotoSimilarity(fp_list[i], fp_list[:i])
-        dists.extend([1 - x for x in sims])
+        dists.extend(1 - x for x in sims)
     return dists
 
 
@@ -112,7 +220,8 @@ def _grouped_train_test(X,y,groups,validation_size):
         [groups[i] for i in test_idx])
     return X_train, X_test, y_train, y_test, groups_train, groups_test
 
-def cross_validate(X,y,groups,params,n_folds,validation_size,n_jobs):
+def cross_validate(X,y,groups,params,n_folds,validation_size,n_jobs,
+                   verbose=False):
     """
 
     :param X: x values, length N
@@ -143,11 +252,18 @@ def cross_validate(X,y,groups,params,n_folds,validation_size,n_jobs):
     grid = GridSearchCV(estimator=model, cv=cv,
                         param_grid=params,
                         scoring='r2', n_jobs=n_jobs,
-                        verbose=False, return_train_score=True)
+                        verbose=verbose, return_train_score=True)
     grid.fit(X=X_train, y=y_train, groups=groups_train)
     return grid, X_train, X_test, y_train, y_test, groups_train, groups_test
 
 def _sanitize_generator(generator,radius,fingerprint_size):
+    """
+
+    :param generator: name of generator, like  rdFingerprintGenerator.GetRDKitFPGenerator
+    :param radius:  radis (doubled for path/distance lkee arguments)
+    :param fingerprint_size: number of bits
+    :return: instantiated genrator
+    """
     if generator is rdFingerprintGenerator.GetRDKitFPGenerator:
         fp_generator = generator(maxPath=2 * radius, fpSize=fingerprint_size)
     elif generator is rdFingerprintGenerator.GetAtomPairGenerator:
@@ -162,7 +278,7 @@ def _sanitize_generator(generator,radius,fingerprint_size):
 
 def fit(mols, pka, radius=2, fingerprint_size=512, n_jobs=None, params=None,
         generator=rdFingerprintGenerator.GetMorganGenerator, groups=None,
-        n_folds=10, validation_size=0.1):
+        n_folds=10, validation_size=0.1,**kw):
     """
 
     :param mols: see get_generator_error
@@ -176,6 +292,7 @@ def fit(mols, pka, radius=2, fingerprint_size=512, n_jobs=None, params=None,
     :param n_folds:  number of folds for training data
     :param validation_size: fraction to hold out as validation data (not fit!)
     these are *held out* from training and testing
+    :param kw: passed to cross_validate
     :return: grid, X_train, X_test, y_train, y_test, groups_train, groups_test
     """
     if params is None:
@@ -184,7 +301,7 @@ def fit(mols, pka, radius=2, fingerprint_size=512, n_jobs=None, params=None,
     fp_generator = _sanitize_generator(generator, radius, fingerprint_size)
     return cross_validate(X=_mol_to_fingerprints(mols,fp_generator), y=pka,
                           groups=groups, params=params, n_folds=n_folds,
-                          validation_size=validation_size, n_jobs=n_jobs)
+                          validation_size=validation_size, n_jobs=n_jobs,**kw)
 
 
 def flatten_errors(grid):
@@ -293,22 +410,133 @@ def compare_fingerprints(mols,pka,ids,generators=None,
         errors_and_grid_array.append(errors_grid)
     return errors_and_grid_array
 
-def fit_clustered_model(mols,pka,njobs=-2,fingerprint_size = 1024,
-                        cutoff = 0.6,radius = 2,
+def fit_clustered_model(mols,vals,njobs=-2,fingerprint_size = 1024,
+                        cutoff = 0.6,radius = 2,return_all=False,
                         generator=rdFingerprintGenerator.GetMorganGenerator,
-                        **kw):
+                        n_estimators=200,max_depth=2,learning_rate=0.3,**kw):
     """
 
     :param mols: molecules, length N
-    :param pka: y values, length N
+    :param vals: y values, length N
     :param njobs:  number of jobs
     :param fingerprint_size: fingerprint size
     :param cutoff:for clustering
-    :param radius:
-    :param kw:
+    :param radius: for generator
+    :param n_estimators:  see xgboost
+    :param max_depth:  see xgboost
+    :param learning_rate: see xgboost
+    :param return_all: if True, return all
     :return:
     """
     ids = cluster(mols=mols,fingerprint_size=fingerprint_size,
                   cutoff=cutoff,generator=generator)
-    return fit(mols, pka, radius=radius,fingerprint_size=fingerprint_size,
-               n_jobs=njobs, generator=generator,groups=ids,**kw)
+    grid, X_train, X_test, y_train, y_test, groups_train, groups_test = \
+        fit(mols, vals, radius=radius,fingerprint_size=fingerprint_size,
+            n_jobs=njobs, generator=generator,groups=ids,
+            params={'max_depth': [max_depth], 'learning_rate': [learning_rate],
+                       'n_estimators': [n_estimators]},**kw)
+    generator_string = [ name for name,func in _all_names_and_generators()
+                         if func is generator]
+    assert len(generator_string) == 1
+    generator_string = generator_string[0]
+    model = FittedModel(estimator=grid.best_estimator_,
+                        fingerprint_size=fingerprint_size,
+                        radius=radius,generator=generator_string)
+    if return_all:
+        return model, X_train, X_test, y_train, y_test, groups_train, groups_test
+    else:
+        # just return the model
+        return model
+
+
+
+def fit_mol_vals(mols,vals,return_all=False,n_jobs=1,
+                 fingerprint_size=1024,cutoff=0.6, radius=2,**kw):
+    """
+
+    :param mols: list N, molecules
+    :param vals:  list N, vals values
+    :param return_all: if true, returns all. Otherwise, just returns estimator
+    :return: see fit_clustered_model
+    """
+    to_ret = fit_clustered_model(mols, vals, njobs=n_jobs,return_all=return_all,
+                                 fingerprint_size=fingerprint_size,
+                                 cutoff=cutoff, radius=radius,**kw)
+    return to_ret
+
+
+
+
+def _predictor_path(name,make_path=True):
+    """
+
+    :param name: name of predictor
+    :param make_path:
+    :return:
+    """
+    base_dir =os.path.join(os.path.dirname(__file__),"data/predictors/")
+    if make_path and (not os.path.isdir(base_dir)):
+        os.makedirs(base_dir)
+    return os.path.join(base_dir,f"predictor_{name}.json")
+
+def cache_by_df(predictor_name,force=False,limit=None,**kw):
+    """
+
+    :param predictor_name: valid key from load_medchem_data.name_to_load_functions
+    :param force: if true, will re-fit and overwrite cache. otherwise uses cache if available
+    :param limit: maximum number of molecules to use for fitting. only use for debugging
+    :param kw:  passed to fit_mol_vals
+    :return: see fit_mol_vals
+    """
+    name_to_loads = load_medchem_data.name_to_load_functions()
+    file_name = _predictor_path(predictor_name)
+    load_f = name_to_loads[predictor_name]
+    if force or not os.path.isfile(file_name):
+        # load the file
+        df = load_f()[:limit]
+        mols = df["mol"]
+        vals = df[predictor_name]
+        assert mols is not None and vals is not None
+        model = fit_mol_vals(mols, vals, **kw)
+        # save the model
+        model.save_model(file_name)
+    else:
+        # no need to load anything just used the cached model
+        model = FittedModel().load_model(file_name)
+    return model
+
+def log_d__predictor(**kw):
+    """
+    Convenience function for getting log_d predictor
+
+    :param kw: passed to cache_by_df
+    :return: see cache_by_df, except for log_d
+    """
+    return cache_by_df(predictor_name="log_d",**kw)
+
+def pk_a__predictor(**kw):
+    """
+    Convenience function for getting pk_a predictor
+
+    :param kw: passed to cache_by_df
+    :return: see cache_by_df, except for pk_a
+    """
+    return cache_by_df(predictor_name="pk_a",**kw)
+
+def log_p__predictor(**kw):
+    """
+    Convenience function for getting log_p predictor
+
+    :param kw: passed to cache_by_df
+    :return: see cache_by_df, except for log_p
+    """
+    return cache_by_df(predictor_name="log_p",**kw)
+
+def log_s__predictor(**kw):
+    """
+    Convenience function for getting log_s predictor
+
+    :param kw: passed to cache_by_df
+    :return: see cache_by_df, except for log_s
+    """
+    return cache_by_df(predictor_name="log_s",**kw)
