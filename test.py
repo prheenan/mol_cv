@@ -2,11 +2,13 @@
 Unit tests for molecular CV
 """
 import unittest
+import tempfile
 import pandas
 import numpy as np
 from rdkit.Chem import MolFromSmiles, Descriptors, MolToInchi
 from rdkit import RDLogger
 import mol_cv
+import predict_medchem
 
 
 
@@ -52,6 +54,41 @@ class MyTestCase(unittest.TestCase):
         """
         test the pKa code
         """
+
+    def test_99_predictors(self):
+        """
+        test all the predictors
+        """
+        # make sure we can load and fit every model (just N=1000 to speed up)
+        self.i_subtest = 0
+        for pred in [predict_medchem.log_p__predictor, predict_medchem.pk_a__predictor,
+                     predict_medchem.log_s__predictor, predict_medchem.log_d__predictor]:
+            predictor = pred(limit=1000, force=True, verbose=True,
+                             cache_model=False)
+            with tempfile.NamedTemporaryFile(suffix=".json") as f_tmp:
+                predictor.save_model(f_tmp.name)
+                post_save = predict_medchem.FittedModel().load_model(f_tmp.name)
+                attributes = post_save.attributes_are_list()
+                for a in attributes:
+                    with self.subTest(i=self.i_subtest):
+                        equals = getattr(post_save,a) == getattr(predictor,a)
+                        try:
+                            assert equals.all()
+                        except TypeError:
+                            assert equals
+                    self.i_subtest += 1
+                # check that the estimator properties are the same
+                attr_estimator = ["feature_importances_", "intercept_"]
+                for a in attr_estimator:
+                    with self.subTest(i=self.i_subtest):
+                        assert all(getattr(post_save.estimator, a) == \
+                                   getattr(predictor.estimator, a))
+                self.i_subtest += 1
+                # make sure the precictions the saved object makes are the same
+                with self.subTest(i=self.i_subtest):
+                    all(post_save.predict(post_save.X_test) == \
+                        predictor.predict(predictor.X_test))
+                self.i_subtest += 1
 
     def test_lilly(self):
         """

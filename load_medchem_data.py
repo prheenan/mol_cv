@@ -37,7 +37,7 @@ def _load_data_files(logd_paths_names,col_y):
         reset_index(drop=False)
     df_median["mol"] = df_median["InChI"].transform(MolFromInchi)
     RDLogger.EnableLog('rdApp.*')
-    return df_median
+    return df_median.dropna(subset="mol",ignore_index=True)
 
 def load_log_p():
     """

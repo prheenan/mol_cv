@@ -32,7 +32,9 @@ class FittedModel:
     values from a molecule
     """
     def __init__(self, estimator=None, fingerprint_size=None, radius=None,
-                 generator=None, **kw):
+                 generator=None, save_train_test=True,X_train=None,
+                 X_test=None, y_train=None, y_test=None,
+                 groups_train=None, groups_test=None):
         """
 
         :param estimator:  xgb.Regresor object
@@ -43,9 +45,22 @@ class FittedModel:
         self.fingerprint_size = fingerprint_size
         self.radius = radius
         self.generator = generator
-        # make sure the generator function works
-        for k, v in kw.items():
-            setattr(self, k, v)
+        self.save_train_test = save_train_test
+        if self.save_train_test:
+            self.X_train = X_train
+            self.X_test = X_test
+            self.y_train = y_train
+            self.y_test = y_test
+            self.groups_train = groups_train
+            self.groups_test = groups_test
+
+    def attributes_are_list(self):
+        """
+
+        :return: which attributes of this class need to be converted to list
+        """
+        return {'X_train','X_test', 'y_train', 'y_test',
+                'groups_train','groups_test'}
 
     def load_model(self, file_name):
         """
@@ -65,8 +80,13 @@ class FittedModel:
             model = xgb.XGBRegressor()
             model.load_model(fname=f_tmp_out.name)
             original_dict["estimator"] = model
+        convert_to_list = self.attributes_are_list()
         for k, v in original_dict.items():
-            setattr(self, k, v)
+            if k in convert_to_list:
+                val = np.array(v)
+            else:
+                val = v
+            setattr(self, k, val)
         return self
 
     def save_model(self, file_name):
@@ -81,11 +101,15 @@ class FittedModel:
             with open(f_tmp_out.name, 'r', encoding="utf8") as f_read:
                 model_as_string = json.load(f_read)
         # save out all the attributes
-        output_dict = {}
+        output_dict = {"estimator":model_as_string}
+        convert_to_list = self.attributes_are_list()
         for k, v in self.__dict__.items():
-            if k != "estimator":
-                output_dict[k] = v
-        output_dict["estimator"] = model_as_string
+            if k in convert_to_list:
+                output_dict[k] = v.tolist()
+            else:
+                # estimator treated specially above
+                if k != "estimator":
+                    output_dict[k] = v
         with open(file_name, 'w', encoding="utf8") as fh:
             json.dump(output_dict, fh)
 
@@ -155,34 +179,36 @@ def get_generator_error(mols,pka,ids,label, generator, fingerprint_size,**kw):
 
 
 
-def distances(fp_list):
+def distances(fp_list,disable_tqdm=False):
     """
 
     :param fp_list: list, length N, of fingerprints
+    :param disable_tqdm: if true, disable tqdm
     :return: list rrepresenting the first argument to Butina.ClusterData
     (i.e., "DistData" array)
     """
     # see https://github.com/PatWalters/workshop/blob/master/clustering/taylor_butina.ipynb
     dists = []
     nfps = len(fp_list)
-    for i in tqdm(range(1, nfps),desc="Getting distances"):
+    for i in tqdm(range(1, nfps),desc="Getting distances",disable=disable_tqdm):
         # pylint: disable=no-member
         sims = DataStructs.BulkTanimotoSimilarity(fp_list[i], fp_list[:i])
         dists.extend(1 - x for x in sims)
     return dists
 
 
-def cluster_ids(fp_list, cutoff=0.35):
+def cluster_ids(fp_list, cutoff=0.35,disable_tqdm=False):
     """
 
     :param fp_list: list, length N, of fingerprints
     :param cutoff: passed to Butina.ClusterData; fingerprints closer than
     this are in the same cluster
+    :param disable_tqdm: if true, disable disable_tqdm
     :return: list, length N, of arbitrary cluster IDs
     """
     nfps = len(fp_list)
-    mol_clusters = Butina.ClusterData(distances(fp_list), nfps, cutoff,
-                                      isDistData=True)
+    mol_clusters = Butina.ClusterData(distances(fp_list,disable_tqdm=disable_tqdm),
+                                      nfps, cutoff,isDistData=True)
     cluster_id_list = [0] * nfps
     for idx, cluster_list in enumerate(mol_clusters, 1):
         for member in cluster_list:
@@ -190,7 +216,8 @@ def cluster_ids(fp_list, cutoff=0.35):
     return cluster_id_list
 
 def _mol_to_fingerprints(mols,fp_generator):
-    return np.array([list(e) for e in mols.transform(fp_generator.GetFingerprint)],
+    return np.array([list(e)
+                     for e in (fp_generator.GetFingerprint(m) for m in mols)],
                     dtype=bool)
 
 def _grouped_train_test(X,y,groups,validation_size):
@@ -202,8 +229,9 @@ def _grouped_train_test(X,y,groups,validation_size):
     :param validation_size:  percent to save for test set
     :return: tuple of <X_train, X_test, y_train, y_test, groups_trian, groups_test>
     """
-    # the test size is a fractio (e.g. 0.1), so the numbers of splits is 1/test_size (e.g., 1/0.1 = 10);
-    # first one is the only one we care about (e.g., 90% train 10% test)
+    # the test size is a fractio (e.g. 0.1), so the numbers of splits is 1/test_size
+    # (e.g., 1/0.1 = 10); first one is the only one we care about
+    # (e.g., 90% train 10% test)
     splitter = GroupKFold(n_splits=int(np.ceil(1 / validation_size)))
     splits = list(splitter.split(X=X, y=y, groups=groups))
     train_idx, test_idx = splits[0]
@@ -324,23 +352,28 @@ def flatten_errors(grid):
     df_cat = pandas.concat(df_to_cat)
     return df_cat
 
-def cluster(mols,fingerprint_size,cutoff,generator=None):
+def cluster(mols,fingerprint_size,cutoff,generator=None,disable_tqdm=False):
     """
 
     :param mols: see get_generator_error
     :param fingerprint_size: see get_generator_error
     :param cutoff: see get_generator_error
+    :param disable_tqdm: if true, disable tqdm
     :return: list of ids corresponding to molecules
     """
     if generator is None:
         generator = rdFingerprintGenerator.GetMorganGenerator
     fp_generator = _sanitize_generator(generator, radius=2,
                                        fingerprint_size=fingerprint_size)
-    fingerprints = list(mols.transform(fp_generator.GetFingerprint))
-    ids = cluster_ids(fingerprints,cutoff=cutoff)
+    fingerprints = [fp_generator.GetFingerprint(m) for m in mols]
+    ids = cluster_ids(fingerprints,cutoff=cutoff,disable_tqdm=disable_tqdm)
     return ids
 
 def _all_names_and_generators():
+    """
+
+    :return: list, each element a pair of <name,generator functions>
+    """
     return [
         ['ttgen', rdFingerprintGenerator.GetTopologicalTorsionGenerator],
         ['apgen', rdFingerprintGenerator.GetAtomPairGenerator],
@@ -367,7 +400,7 @@ def cluster_stats(mols,n_points=20,fingerprint_size=None,
             kws.append({"fingerprint_size": fp_size, "cutoff": cutoff,**kw})
     all_ids_kw = []
     for kw_tmp in tqdm(kws,disable=disable_tqdm):
-        all_ids_kw.append([cluster(mols, **kw_tmp), kw_tmp])
+        all_ids_kw.append([cluster(mols, disable_tqdm=disable_tqdm,**kw_tmp), kw_tmp])
     rows = []
     df_sizes = []
     for ids, kw_other in all_ids_kw:
@@ -441,7 +474,10 @@ def fit_clustered_model(mols,vals,njobs=-2,fingerprint_size = 1024,
     generator_string = generator_string[0]
     model = FittedModel(estimator=grid.best_estimator_,
                         fingerprint_size=fingerprint_size,
-                        radius=radius,generator=generator_string)
+                        radius=radius,generator=generator_string,
+                        X_train=X_train, X_test=X_test, y_train=y_train,
+                        y_test=y_test, groups_train=groups_train,
+                        groups_test=groups_test)
     if return_all:
         return model, X_train, X_test, y_train, y_test, groups_train, groups_test
     else:
@@ -479,7 +515,8 @@ def _predictor_path(name,make_path=True):
         os.makedirs(base_dir)
     return os.path.join(base_dir,f"predictor_{name}.json")
 
-def cache_by_df(predictor_name,force=False,limit=None,**kw):
+def cache_by_df(predictor_name,force=False,limit=None,n_jobs=2,
+                cache_model=True,**kw):
     """
 
     :param predictor_name: valid key from load_medchem_data.name_to_load_functions
@@ -494,12 +531,13 @@ def cache_by_df(predictor_name,force=False,limit=None,**kw):
     if force or not os.path.isfile(file_name):
         # load the file
         df = load_f()[:limit]
-        mols = df["mol"]
-        vals = df[predictor_name]
+        mols = list(df["mol"])
+        vals = list(df[predictor_name])
         assert mols is not None and vals is not None
-        model = fit_mol_vals(mols, vals, **kw)
-        # save the model
-        model.save_model(file_name)
+        model = fit_mol_vals(mols, vals, n_folds=2,n_jobs=n_jobs,**kw)
+        if cache_model:
+            # save the model
+            model.save_model(file_name)
     else:
         # no need to load anything just used the cached model
         model = FittedModel().load_model(file_name)
