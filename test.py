@@ -79,7 +79,7 @@ class MyTestCase(unittest.TestCase):
         """
         self.i_subtest =0
         kw_terms_cns_mpo = [
-            [dict(log_p=3.7, log_d=2.7, tpsa=90, mw=375, hbd=1, pk_a=9),
+            [{'log_p':3.7, 'log_d':2.7, 'tpsa':90, 'mw':375, 'hbd':1, 'pk_a':9},
              [0.65, 0.65, 0.89, 1.0, 0.83, 0.5],
              4.5,
              2]

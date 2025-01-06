@@ -64,9 +64,8 @@ Isotope composition
 Also
 
 ```
-CNS MPO
-Lilly MedChem Rules?
-LogS?
+https://support.collaborativedrug.com/hc/en-us/articles/115003461383-Chemical-Properties-Calculated-by-CDD-Vault-During-Chemical-Registration
+The elemental composition (CHNO Analysis)?
 ```
 
 # TODO

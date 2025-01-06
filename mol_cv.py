@@ -7,8 +7,14 @@ import re
 import sys
 import subprocess
 # pylint: disable=c-extension-no-member
-from rdkit.Chem import (rdMolDescriptors, Descriptors,QED)
+from rdkit.Chem import (rdMolDescriptors, Descriptors,QED,MolToSmiles)
+# for more information on filters see:
+# see : https://github.com/rdkit/rdkit/blob/master/Code/GraphMol/FilterCatalog/README
+# pylint: disable=no-member
+from rdkit.Chem import FilterCatalog
+from rdkit.Chem.FilterCatalog import FilterCatalogParams
 from utilities import normalize_smiles
+
 
 pattern_demerits = re.compile(pattern=r"""
                 ^
@@ -28,6 +34,77 @@ pattern_demerits = re.compile(pattern=r"""
                 $ # must match to the end
                 """,flags=re.VERBOSE)
 
+
+class Alerts:
+    """
+    Defines convenience functions for going from molecules to structural altert
+    """
+    def __init__(self):
+        """
+        Initialization function
+        """
+        self.filters = {}
+        for catalogs, label in [
+            [FilterCatalogParams.FilterCatalogs.BRENK, "Brenk"],
+            [FilterCatalogParams.FilterCatalogs.NIH, "NIH"],
+            [FilterCatalogParams.FilterCatalogs.PAINS, "PAINS"]]:
+            params = FilterCatalogParams()
+            params.AddCatalog(catalogs)
+            filterer = FilterCatalog.FilterCatalog(params)
+            self.filters[label] = filterer
+
+    def _general_filter(self, mol,filter_obj):
+        """
+
+        :param mol: rdkit molecule
+        :param filter_obj: key into self.filters
+        :return: all the descriptions for any filter matches
+        """
+        return [str(filterMatch.filterMatch)
+                for filterMatch in filter_obj.GetFilterMatches(mol)]
+
+    def brenk(self, mol):
+        """
+
+        :param mol: rdkit molecule
+        :return: list of violations of Brenk filters
+
+        Brenk R et al. Lessons Learnt from Assembling Screening Libraries for
+       Drug Discovery for Neglected Diseases.
+       ChemMedChem 3 (2008) 435-444. doi:10.1002/cmdc.200700139.
+        """
+        return self._general_filter(mol,self.filters["Brenk"])
+
+    def nih(self, mol):
+        """
+
+        :param mol:
+        :return: list of violations of NIH filters
+
+         Reference: Doveston R, et al. A Unified Lead-oriented Synthesis of over Fifty
+            Molecular Scaffolds. Org Biomol Chem 13 (2014) 859Ð65.
+            doi:10.1039/C4OB02287D.
+        Reference: Jadhav A, et al. Quantitative Analyses of Aggregation, Autofluorescence,
+                and Reactivity Artifacts in a Screen for Inhibitors of a Thiol Protease.
+                J Med Chem 53 (2009) 37Ð51. doi:10.1021/jm901070c.
+        """
+        return self._general_filter(mol,self.filters["NIH"])
+
+    def pains(self, mol):
+        """
+
+        :param mol: rdkit molecule
+        :return:list of violations of PAINS molecules
+
+        Reference: Baell JB, Holloway GA. New Substructure Filters for Removal of Pan Assay
+           Interference Compounds (PAINS) from Screening Libraries and for Their
+           Exclusion in Bioassays.
+           J Med Chem 53 (2010) 2719Ð40. doi:10.1021/jm901137j.
+        """
+        return self._general_filter(mol,self.filters["PAINS"])
+
+#instantiate an alert object to speed up future queries
+alert_obj = Alerts()
 
 def loss(v, a, b, aa=-float('inf'), bb=-float('inf')):
     """
@@ -115,6 +192,12 @@ x,y = vals[::2], vals[1::2];  import numpy as np; p = np.polyfit(x,y,deg=1); p
 
 
 def cns_mpo(*args, **kw):
+    """
+
+    :param args: see cns_mpo_terms
+    :param kw: see cns_mpo_terms
+    :return: cns_mpo score, 0 to 6
+    """
     return sum(cns_mpo_terms(*args, **kw))
 
 
@@ -198,6 +281,41 @@ def _smiles_to_lilly(smiles):
     """
     return _smiles_to_lilly_dict(smiles)
 
+def calculate_properties(mol,predictor_dict):
+    """
+
+    :param mol: rdkit Molecule object
+    :param predictor_dict: output of predict_medchem.all_predictors()
+    :return:
+    """
+    smiles = MolToSmiles(mol)
+    row = {}
+    for prop, pred in predictor_dict.items():
+        row[prop] = pred.predict_mols([mol])[0]
+    for k, func in _name_to_funcs().items():
+        val = func(mol)
+        if k in alert_obj.filters:
+            row[f"{k} alert count"] = len(val)
+            row[f"{k} explanation"] = ",".join(val)
+        else:
+            row[k] = val
+    row['Total alert count'] = sum( (row[f"{k} alert count"]
+                                     for k in alert_obj.filters))
+    lilly = _smiles_to_lilly([smiles])[0]
+    for lilly_prop in ["Status", "Demerits", "Explanation"]:
+        row[f"Lilly {lilly_prop.lower()}"] = lilly[lilly_prop]
+    row["cns_mpo"] = cns_mpo(log_p=row["log_p"],log_d=row["log_d"],
+                             mw=row["Molecular weight"],
+                             tpsa=row["Topological polar surface area"],
+                             hbd=row["H-bond donors"],
+                             pk_a=row["pk_a"])
+    # see https://en.wikipedia.org/wiki/Lipinski%27s_rule_of_five
+    row["Lipinski violations"] = sum(((row["log_p"] > 5),
+                                      (row["Molecular weight"] > 500),
+                                      (row["H-bond donors"] > 5),
+                                      (row["H-bond acceptors"] > 5)))
+    return row
+
 def _name_to_funcs():
     """
     returns dictionary of property to function giving property
@@ -217,9 +335,14 @@ def _name_to_funcs():
          "H-bond acceptors":rdMolDescriptors.CalcNumHBA,
          "Exact mass": Descriptors.ExactMolWt,
          "Molecular weight":Descriptors.MolWt,
-         "Heavy atom count": rdMolDescriptors.CalcNumHeavyAtoms,
+         "Aromatic rings":rdMolDescriptors.CalcNumAromaticRings,
+         "Heavy atoms": rdMolDescriptors.CalcNumHeavyAtoms,
          "Topological polar surface area":rdMolDescriptors.CalcTPSA,
          "Rotatable bonds":rdMolDescriptors.CalcNumRotatableBonds,
          "Chemical formula": rdMolDescriptors.CalcMolFormula,
+         "Fraction of carbons SP3 hybridized":rdMolDescriptors.CalcFractionCSP3,
          "QED":QED.qed,
+         "Brenk":alert_obj.brenk,
+         "NIH":alert_obj.nih,
+         "PAINS":alert_obj.pains
     }
