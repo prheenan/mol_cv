@@ -543,6 +543,16 @@ def cache_by_df(predictor_name,force=False,limit=None,n_jobs=2,
         model = FittedModel().load_model(file_name)
     return model
 
+def all_predictors(**kw):
+    """
+    Convenience function to get all predictors
+
+    :param kw: passed to  cache_by_df
+    :return: dictionary of property name to predictor
+    """
+    return { n:cache_by_df(predictor_name=n,**kw)
+             for n in load_medchem_data.name_to_load_functions().keys()}
+
 def log_d__predictor(**kw):
     """
     Convenience function for getting log_d predictor

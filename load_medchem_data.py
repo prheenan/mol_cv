@@ -7,7 +7,7 @@ import numpy as np
 import pandas
 from rdkit import Chem
 from rdkit import RDLogger
-from rdkit.Chem import MolToInchi,MolFromInchi
+from rdkit.Chem import MolToInchi,MolFromInchi, MolFromSmiles
 from tqdm import tqdm
 import utilities
 
@@ -118,6 +118,22 @@ def valid_pka_or_None(val):
                 if r in s_val:
                     return np.mean([float(f) for f in s_val.split(r)])
             return None
+
+def load_fda_drugs(limit=None):
+    """
+    :param limit: number of rows/molecules to limit to
+    :return: dataframe of approved drugs
+    """
+    file_path = os.path.join(os.path.dirname(__file__), "data/fda.csv")
+    fda = pandas.read_csv(file_path)[:limit]
+    RDLogger.DisableLog('rdApp.*')
+    fda["smiles"] = fda["smiles"].transform(utilities.normalize_smiles)
+    fda["mol"] = fda["smiles"].transform(MolFromSmiles)
+    RDLogger.EnableLog('rdApp.*')
+    fda.drop_duplicates("smiles", ignore_index=True, inplace=True)
+    fda.dropna(subset="smiles", inplace=True, ignore_index=True)
+    fda.dropna(subset="mol", inplace=True, ignore_index=True)
+    return fda
 
 def name_to_load_functions():
     """

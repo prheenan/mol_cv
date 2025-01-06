@@ -7,7 +7,7 @@ import re
 import sys
 import subprocess
 # pylint: disable=c-extension-no-member
-from rdkit.Chem import (rdMolDescriptors, Descriptors)
+from rdkit.Chem import (rdMolDescriptors, Descriptors,QED)
 from utilities import normalize_smiles
 
 pattern_demerits = re.compile(pattern=r"""
@@ -28,6 +28,94 @@ pattern_demerits = re.compile(pattern=r"""
                 $ # must match to the end
                 """,flags=re.VERBOSE)
 
+
+def loss(v, a, b, aa=-float('inf'), bb=-float('inf')):
+    """
+    cns-mpo style loss function
+
+    :param v: value
+    :param a: between bb and a receives top score
+    :param b: rightmost bound; between a and b receives linear interpolation
+    from 1 to 0; more than this received 0
+    :param aa: leftmost bound; less than this receives 0. Set to -inf to disable
+    :param bb: between aa and bb receives linear interpolation from 0 to 1; between
+    bb and a receives score of 1
+    :return: loss score
+    """
+    if v < aa:
+        return 0
+    elif v <= bb:
+        return (v - aa) / (bb - aa)
+    elif v <= a:
+        return 1
+    elif v < b:
+        return (b - v) / (b - a)
+    else:
+        return 0
+
+
+def cns_mpo_terms(log_p, log_d, mw, tpsa, hbd, pk_a):
+    """
+
+    :param log_p: cLogP
+    :param log_d: cLogD
+    :param mw:  Molecular Weight
+    :param tpsa: polar surface area
+    :param hbd: hydeogen bond donors
+    :param pk_a: pKa of most basic center
+    :return: list of cns mpo terms, in order of arguments. sum to get cns mpo
+
+    Looking at Fig 1E in https://pubs.acs.org/doi/full/10.1021/acschemneuro.6b00029#
+    Central Nervous System Multiparameter Optimization Desirability:
+    Application in Drug Discovery Article
+
+
+    From Figure 1E, we know that at HBD=4, the function should be zero
+    From Table 2, we know that at HBD=1, the function should be 0.83
+
+    HBD is a little tricky; unlike its appearance it doesn't actually go monotonically
+    from 0 to 4. The points (x,y) are given below per WebPlotDigitizer
+
+    1.0065645514223196, 0.8313725490196078
+    2.002188183807439, 0.5019607843137255
+    2.9978118161925584, 0.16470588235294104
+
+    Loading this into a python variable a and doing
+
+vals = [float(f) for f in a.replace(",","").strip().split()]
+x,y = vals[::2], vals[1::2];  import numpy as np; p = np.polyfit(x,y,deg=1); p
+
+    This yields
+
+    array([-0.33479853,  1.16967608])
+
+    In other words
+
+    T0 = (-0.33479853 * HBD)  + 1.16967608
+
+    Setting this equal for T0=1 gives HBD=0.5 and T0=0 gives 3.5 (within 2%):
+
+    (1-p[1])/p[0] # = 0.51
+    (0-p[1])/p[0] # = 3.49
+
+    this also gives T0=0.83 at HBD=1 as expected
+
+     np.polyval(p,1) # = (0.8348775407598936
+
+     So the HBD bounds are 0.5 and 3.5. It is wild to me this isnt in the paper
+    """
+    return (
+        loss(log_p, 3, 5),
+        loss(log_d, 2, 4),
+        loss(mw, 360, 500),
+        loss(tpsa, aa=20, bb=40, a=90, b=120),
+        loss(hbd, 0.5, 3.5),
+        loss(pk_a, 8, 10)
+    )
+
+
+def cns_mpo(*args, **kw):
+    return sum(cns_mpo_terms(*args, **kw))
 
 
 def _parse_lilly_line_to_dict(l):
@@ -128,8 +216,10 @@ def _name_to_funcs():
          "H-bond donors":rdMolDescriptors.CalcNumHBD,
          "H-bond acceptors":rdMolDescriptors.CalcNumHBA,
          "Exact mass": Descriptors.ExactMolWt,
+         "Molecular weight":Descriptors.MolWt,
          "Heavy atom count": rdMolDescriptors.CalcNumHeavyAtoms,
          "Topological polar surface area":rdMolDescriptors.CalcTPSA,
          "Rotatable bonds":rdMolDescriptors.CalcNumRotatableBonds,
-         "Chemical formula": rdMolDescriptors.CalcMolFormula
+         "Chemical formula": rdMolDescriptors.CalcMolFormula,
+         "QED":QED.qed,
     }

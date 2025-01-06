@@ -27,6 +27,11 @@ Generate 'molecular CVs' of common chemical properties
 - LogS from [AqSolDB](https://www.nature.com/articles/s41597-019-0151-1)
   - > Sorkun, M.C., Khetan, A. & Er, S. AqSolDB, a curated reference set of aqueous solubility and 2D descriptors for a diverse set of compounds. Sci Data 6, 143 (2019). https://doi.org/10.1038/s41597-019-0151-1
 
+## Other works cited
+
+- [CNS MPO paper](https://doi.org/10.1021/acschemneuro.6b00029)
+  - >  ACS Chem. Neurosci. 2016, 7, 6, 767–775
+
 TBD add licensing
 
 ## Data sets considered
@@ -63,3 +68,8 @@ CNS MPO
 Lilly MedChem Rules?
 LogS?
 ```
+
+# TODO
+
+- Speed up caching of predictors
+- Tuning predictors

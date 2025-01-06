@@ -3,12 +3,12 @@ Unit tests for molecular CV
 """
 import unittest
 import tempfile
-import pandas
 import numpy as np
 from rdkit.Chem import MolFromSmiles, Descriptors, MolToInchi
 from rdkit import RDLogger
 import mol_cv
 import predict_medchem
+import load_medchem_data
 
 
 
@@ -31,24 +31,7 @@ class MyTestCase(unittest.TestCase):
         """
         set up the common data sets used for testing
         """
-        cls.fda = pandas.read_csv("./data/fda.csv")
-        RDLogger.DisableLog('rdApp.*')
-        cls.fda["smiles"] = cls.fda["smiles"].transform(mol_cv.normalize_smiles)
-        cls.fda["mol"] = cls.fda["smiles"].transform(MolFromSmiles)
-        RDLogger.EnableLog('rdApp.*')
-        cls.fda.drop_duplicates("smiles",ignore_index=True,inplace=True)
-        cls.fda.dropna(subset="smiles",inplace=True,ignore_index=True)
-        cls.fda.dropna(subset="mol",inplace=True,ignore_index=True)
-        # get pka data
-        pKa = pandas.read_csv("lib/Dissociation-Constants/iupac_high-confidence_v2_2.csv")
-        invalid_temps = ["Neutral molecule unstable", "not_stated", "c", "not",
-                         "Not stated", "Not given",
-                         "Few details", "not stated", "not_stated "]
-        pKa["Temperature ('C)"] = \
-            [float(str(t).replace("<", "")) if t not in invalid_temps else float("nan")
-             for t in pKa["T"]]
-        pKa["Degrees from 20 ('C)"] = np.abs(pKa["Temperature ('C)"] - 20)
-        _ = pKa[pKa["pka_type"].isin(["pKa1"]) & pKa["Temperature ('C)"].between(15, 25)]
+        cls.fda = load_medchem_data.load_fda_drugs()
 
     def test_pKa(self):
         """
@@ -89,6 +72,32 @@ class MyTestCase(unittest.TestCase):
                     all(post_save.predict(post_save.X_test) == \
                         predictor.predict(predictor.X_test))
                 self.i_subtest += 1
+
+    def test_cns_mpo(self):
+        """
+        tests the cns mpo calculator works as expected
+        """
+        self.i_subtest =0
+        kw_terms_cns_mpo = [
+            [dict(log_p=3.7, log_d=2.7, tpsa=90, mw=375, hbd=1, pk_a=9),
+             [0.65, 0.65, 0.89, 1.0, 0.83, 0.5],
+             4.5,
+             2]
+        ]
+        for kw_table,expected_terms,cns_mpo,round_n in kw_terms_cns_mpo:
+            with self.subTest(self.i_subtest):
+                # see table 2 of CNS MPO paper
+                val = mol_cv.cns_mpo(**kw_table)
+                assert np.round(val,1) == cns_mpo
+            self.i_subtest += 1
+            # make sure the individual terms are calculated correctly
+            with self.subTest(self.i_subtest):
+                val = mol_cv.cns_mpo_terms(**kw_table)
+                # note the terms are returned in the following order
+                # TPSA and MW switches relative to table 2
+                # log_p, log_d, mw, tpsa, hbd, pk_a
+                assert all(np.round(val,round_n) == expected_terms)
+            self.i_subtest += 1
 
     def test_lilly(self):
         """
