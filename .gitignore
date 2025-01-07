@@ -1,4 +1,5 @@
 # PRH ignores
+*.gif
 *.json
 examples/iframe_figures/*
 .idea/*

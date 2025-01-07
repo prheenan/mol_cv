@@ -1,7 +1,6 @@
 """
 contains utilities for plotting, including the radar plots
 """
-from rdkit.Chem import Draw
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -13,11 +12,11 @@ from matplotlib.spines import Spine
 from matplotlib.transforms import Affine2D
 
 
-def cv_plot(row,mol):
+def cv_plot(row,image_mol):
     """
 
     :param row: molecular properties
-    :param mol:  molecule
+    :param image_mol: image of the molecule
     :return: matplotlib figure
     """
     name_vals_bad = [
@@ -32,7 +31,6 @@ def cv_plot(row,mol):
                     ["-cLogS",-row["log_s"]],
                     ["-cLogD",-row["log_d"]],
                 ]
-    img = Draw.MolToImage(mol)
 
     N = len(name_vals_bad)
     theta = radar_factory(N, frame='polygon')
@@ -59,7 +57,7 @@ def cv_plot(row,mol):
         ax.tick_params(axis='x', pad=15,
                        color=color)  # Adjust padding for radial ticks
     ax3.axis("off")
-    ax3.imshow(img, interpolation='spline36')
+    ax3.imshow(image_mol, interpolation='spline36')
     ax3.axis('off')
     plt.tight_layout()
     return fig
