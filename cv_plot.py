@@ -12,38 +12,44 @@ from matplotlib.spines import Spine
 from matplotlib.transforms import Affine2D
 
 
-def cv_plot(row,image_mol):
+def cv_plot_fig(row,image_mol,turn_imshow_axis_off=True,w_pad=-2.5,
+                figsize=(7, 3),width_ratios =None,**kw_imshow):
     """
 
     :param row: molecular properties
     :param image_mol: image of the molecule
+    :param turn_imshow_axis_off: if true, turn imshow axis off
+    :param kw_imshow: passed to plt.imshow()
     :return: matplotlib figure
     """
+    if width_ratios is None:
+        width_ratios = [1, 3, 1]
     name_vals_bad = [
-        ["Lipinski",row['Lipinski violations']/5],
-        ["Deremits",row['Lilly demerits']/100],
-        ["Mol. Wt",row["Molecular weight"]/1000],
-        ["Alerts",row["Total alert count"]/4],
+        ["Lipinski", row['Lipinski violations'] / 5],
+        ["Deremits", row['Lilly demerits'] / 100],
+        ["Mol. Wt", row["Molecular weight"] / 1000],
+        ["Alerts", row["Total alert count"] / 4],
     ]
     name_vals_good = [
-                    ["CNS MPO",row["cns_mpo"]/6],
-                    ["QED",row["QED"]],
-                    ["-cLogS",-row["log_s"]],
-                    ["-cLogD",-row["log_d"]],
-                ]
+        ["CNS MPO", row["cns_mpo"] / 6],
+        ["QED", row["QED"]],
+        ["-cLogS", -row["log_s"]],
+        ["-cLogD", -row["log_d"]],
+    ]
 
     N = len(name_vals_bad)
     theta = radar_factory(N, frame='polygon')
 
-    fig = plt.figure(figsize=(9, 3))
+    fig, axs = plt.subplots(figsize=figsize, subplot_kw=dict(projection="radar"),
+                            nrows=1, ncols=3, width_ratios=width_ratios)
+    axs[1].remove()
+    axs[1] = fig.add_subplot(1, 3, 2)
 
-    ax1 = plt.subplot(131, projection='radar')
-    ax2 = plt.subplot(132, projection='radar')
-    ax3 = plt.subplot(133)
+    ax_bad, ax_im, ax_good = axs
 
-    fig.subplots_adjust(hspace=0.5)
+    fig.subplots_adjust(hspace=-0.0)
     # Plot the four cases from the example data on separate Axes
-    for ax, r_name__r_data, color in zip([ax1, ax2],
+    for ax, r_name__r_data, color in zip([ax_bad, ax_good],
                                          [name_vals_bad, name_vals_good],
                                          ["crimson", "forestgreen"]):
         r_name = [r[0] for r in r_name__r_data]
@@ -52,16 +58,19 @@ def cv_plot(row,image_mol):
         ax.plot(theta, r_data, color=color)
         ax.fill(theta, r_data, facecolor=color, alpha=0.25,
                 label='_nolegend_')
-        ax.set_varlabels(r_name)
+        ax.set_varlabels(r_name, fontsize=10)
         # Adjust tick padding
-        ax.tick_params(axis='x', pad=15,
+        ax.tick_params(axis='x', pad=-6,
                        color=color)  # Adjust padding for radial ticks
-    ax3.axis("off")
-    ax3.imshow(image_mol, interpolation='spline36')
-    ax3.axis('off')
-    plt.tight_layout()
+        alignments = ["center", "right", "center", "left"]
+        for ha, t in zip(alignments, ax.get_xticklabels()):
+            plt.setp(t, horizontalalignment=ha)
+    ax_im.imshow(image_mol, interpolation='spline36', **kw_imshow)
+    if turn_imshow_axis_off:
+        ax_im.axis('off')
+        ax_im.set_facecolor("none")
+    plt.tight_layout(w_pad=w_pad)
     return fig
-
 
 def radar_factory(num_vars, frame='circle'):
     """
@@ -115,6 +124,11 @@ def radar_factory(num_vars, frame='circle'):
                 self._close_line(line)
 
         def _close_line(self, line):
+            """
+
+            :param line: line to close
+            :return: None
+            """
             x, y = line.get_data()
             if x[0] != x[-1]:
                 x = np.append(x, x[0])
@@ -122,9 +136,19 @@ def radar_factory(num_vars, frame='circle'):
                 line.set_data(x, y)
 
         def set_varlabels(self, labels,**kw):
+            """
+
+            :param labels: for the thetas
+            :param kw: passed to set_thetagrids
+            :return: nothing
+            """
             self.set_thetagrids(np.degrees(theta), labels,**kw)
 
         def _gen_axes_patch(self):
+            """
+
+            :return: Circle or  RegularPolygon object
+            """
             # The Axes patch must be centered at (0.5, 0.5) and of radius 0.5
             # in axes coordinates.
             if frame == 'circle':
@@ -133,9 +157,13 @@ def radar_factory(num_vars, frame='circle'):
                 return RegularPolygon((0.5, 0.5), num_vars,
                                       radius=.5, edgecolor="k")
             else:
-                raise ValueError("Unknown value for 'frame': %s" % frame)
+                raise ValueError(f"Unknown value for {frame}")
 
         def _gen_axes_spines(self):
+            """
+
+            :return: spines for axes
+            """
             if frame == 'circle':
                 return super()._gen_axes_spines()
             elif frame == 'polygon':
@@ -150,7 +178,7 @@ def radar_factory(num_vars, frame='circle'):
                                     + self.transAxes)
                 return {'polar': spine}
             else:
-                raise ValueError("Unknown value for 'frame': %s" % frame)
+                raise ValueError(f"Unknown value for {frame}")
 
     register_projection(RadarAxes)
     return theta

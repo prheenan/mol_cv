@@ -2,6 +2,7 @@
 module defining the molecular CV
 """
 import tempfile
+import warnings
 import os
 import re
 import sys
@@ -10,9 +11,13 @@ import subprocess
 from rdkit.Chem import (rdMolDescriptors, Descriptors,QED,MolToSmiles)
 # for more information on filters see:
 # see : https://github.com/rdkit/rdkit/blob/master/Code/GraphMol/FilterCatalog/README
-# pylint: disable=no-member
-from rdkit.Chem import FilterCatalog
-from rdkit.Chem.FilterCatalog import FilterCatalogParams
+# warning catch are needed to avoid the error given below see
+# https://github.com/rdkit/rdkit/issues/4425
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore",category=RuntimeWarning)
+    # pylint: disable=no-member
+    from rdkit.Chem import FilterCatalog
+    from rdkit.Chem.FilterCatalog import FilterCatalogParams
 from utilities import normalize_smiles
 
 
@@ -50,6 +55,7 @@ class Alerts:
             [FilterCatalogParams.FilterCatalogs.PAINS, "PAINS"]]:
             params = FilterCatalogParams()
             params.AddCatalog(catalogs)
+            # pylint: disable=no-member
             filterer = FilterCatalog.FilterCatalog(params)
             self.filters[label] = filterer
 
@@ -281,40 +287,44 @@ def _smiles_to_lilly(smiles):
     """
     return _smiles_to_lilly_dict(smiles)
 
-def calculate_properties(mol,predictor_dict):
+def calculate_properties(mols,predictor_dict):
     """
 
-    :param mol: rdkit Molecule object
+    :param mols: list N of rdkit Molecule objects
     :param predictor_dict: output of predict_medchem.all_predictors()
     :return:
     """
-    smiles = MolToSmiles(mol)
-    row = {}
-    for prop, pred in predictor_dict.items():
-        row[prop] = pred.predict_mols([mol])[0]
-    for k, func in _name_to_funcs().items():
-        val = func(mol)
-        if k in alert_obj.filters:
-            row[f"{k} alert count"] = len(val)
-            row[f"{k} explanation"] = ",".join(val)
-        else:
-            row[k] = val
-    row['Total alert count'] = sum( (row[f"{k} alert count"]
-                                     for k in alert_obj.filters))
-    lilly = _smiles_to_lilly([smiles])[0]
-    for lilly_prop in ["Status", "Demerits", "Explanation"]:
-        row[f"Lilly {lilly_prop.lower()}"] = lilly[lilly_prop]
-    row["cns_mpo"] = cns_mpo(log_p=row["log_p"],log_d=row["log_d"],
-                             mw=row["Molecular weight"],
-                             tpsa=row["Topological polar surface area"],
-                             hbd=row["H-bond donors"],
-                             pk_a=row["pk_a"])
-    # see https://en.wikipedia.org/wiki/Lipinski%27s_rule_of_five
-    row["Lipinski violations"] = sum(((row["log_p"] > 5),
-                                      (row["Molecular weight"] > 500),
-                                      (row["H-bond donors"] > 5),
-                                      (row["H-bond acceptors"] > 5)))
-    return row
+    smiles = [MolToSmiles(m) for m in mols]
+    rows = []
+    for mol in mols:
+        row = {}
+        for prop, pred in predictor_dict.items():
+            row[prop] = pred.predict_mols([mol])[0]
+        for k, func in _name_to_funcs().items():
+            val = func(mol)
+            if k in alert_obj.filters:
+                row[f"{k} alert count"] = len(val)
+                row[f"{k} explanation"] = ",".join(val)
+            else:
+                row[k] = val
+        row['Total alert count'] = sum( (row[f"{k} alert count"]
+                                         for k in alert_obj.filters))
+        # see https://en.wikipedia.org/wiki/Lipinski%27s_rule_of_five
+        row["Lipinski violations"] = sum(((row["log_p"] > 5),
+                                          (row["Molecular weight"] > 500),
+                                          (row["H-bond donors"] > 5),
+                                          (row["H-bond acceptors"] > 5)))
+        row["cns_mpo"] = cns_mpo(log_p=row["log_p"], log_d=row["log_d"],
+                                 mw=row["Molecular weight"],
+                                 tpsa=row["Topological polar surface area"],
+                                 hbd=row["H-bond donors"],
+                                 pk_a=row["pk_a"])
+        rows.append(row)
+    # lilly is called once for all smiles to speed up
+    for row, lilly in zip(rows,_smiles_to_lilly(smiles)):
+        for lilly_prop in ["Status", "Demerits", "Explanation"]:
+            row[f"Lilly {lilly_prop.lower()}"] = lilly[lilly_prop]
+    return rows
 
 def _name_to_funcs():
     """

@@ -33,11 +33,6 @@ class MyTestCase(unittest.TestCase):
         """
         cls.fda = load_medchem_data.load_fda_drugs()
 
-    def test_pKa(self):
-        """
-        test the pKa code
-        """
-
     def test_99_predictors(self):
         """
         test all the predictors
@@ -73,7 +68,7 @@ class MyTestCase(unittest.TestCase):
                         predictor.predict(predictor.X_test))
                 self.i_subtest += 1
 
-    def test_cns_mpo(self):
+    def test_00_cns_mpo(self):
         """
         tests the cns mpo calculator works as expected
         """
@@ -99,7 +94,7 @@ class MyTestCase(unittest.TestCase):
                 assert all(np.round(val,round_n) == expected_terms)
             self.i_subtest += 1
 
-    def test_lilly(self):
+    def test_01_lilly(self):
         """
         Test the lily scoring routine
 
@@ -158,6 +153,17 @@ class MyTestCase(unittest.TestCase):
                 assert output["Explanation"] == explanation, output["Explanation"]
             self.i_subtest += 1
     RDLogger.EnableLog('rdApp.*')
+
+    def test_98_predictor_fit(self):
+        """
+        test that the values work on the fda data set
+        """
+        predictor_dict = predict_medchem.all_predictors()
+        fda = load_medchem_data.load_fda_drugs()
+        self.i_subtest = 0
+        with self.subTest(i=self.i_subtest, msg="Calculating properties"):
+            mol_cv.calculate_properties(fda["mol"],predictor_dict)
+        self.i_subtest += 1
 
 if __name__ == '__main__':
     unittest.main()
