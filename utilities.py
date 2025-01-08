@@ -11,6 +11,9 @@ def normalize_mol_inplace(mol):
     :param mol: molecule
     :return: nothing, normalized inplace and returns
     """
+    if mol is None:
+        return mol
+    # otherwise, can try
     Kekulize(mol, clearAromaticFlags=True)
     return mol
 

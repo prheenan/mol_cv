@@ -7,8 +7,15 @@ import os
 import re
 import sys
 import subprocess
+
+import numpy as np
+import pandas
+import click
+from click import ParamType
 # pylint: disable=c-extension-no-member
-from rdkit.Chem import (rdMolDescriptors, Descriptors,QED,MolToSmiles)
+from rdkit.Chem import (rdMolDescriptors, Descriptors,QED,MolToSmiles,
+                        MolFromSmiles,MolFromInchi,MolFromMolBlock)
+from rdkit import RDLogger
 # for more information on filters see:
 # see : https://github.com/rdkit/rdkit/blob/master/Code/GraphMol/FilterCatalog/README
 # warning catch are needed to avoid the error given below see
@@ -18,7 +25,9 @@ with warnings.catch_warnings():
     # pylint: disable=no-member
     from rdkit.Chem import FilterCatalog
     from rdkit.Chem.FilterCatalog import FilterCatalogParams
+import utilities
 from utilities import normalize_smiles
+import predict_medchem
 
 
 pattern_demerits = re.compile(pattern=r"""
@@ -38,6 +47,42 @@ pattern_demerits = re.compile(pattern=r"""
                 \s*
                 $ # must match to the end
                 """,flags=re.VERBOSE)
+
+
+class BoolType(ParamType):
+    """
+    Defines click boolean stlye argument
+    """
+    def __init__(self):
+        """
+        Initialization
+        """
+
+    def get_metavar(self, param):
+        """
+
+        :param param: name of parametr
+        :return:  help string
+        """
+        return 'Choice([TRUE/True/FALSE/False])'
+
+
+    def convert(self, value, _, __):
+        """
+
+        :param value: value to convert
+        :param _: not used
+        :param __: not used
+        :return: boolean value
+        """
+        upper = str(value).upper()
+        if upper == "TRUE":
+            return True
+        elif upper == "FALSE":
+            return False
+        else:
+            self.fail(f"Invalid value: {value}. Expected TRUE/FALSE")
+            return False
 
 
 class Alerts:
@@ -287,43 +332,128 @@ def _smiles_to_lilly(smiles):
     """
     return _smiles_to_lilly_dict(smiles)
 
-def calculate_properties(mols,predictor_dict):
+def mol_cv(mols,**kw):
+    """
+    Convenience funtion to load all the predictors and calculate all molecular
+    properties
+
+    :param mols: list N of molecules
+    :param kw: passed to calculate_properties
+    :return: calculated properties of molecules
+    """
+    return calculate_properties(mols,predict_medchem.all_predictors(),
+                                **kw)
+
+
+def all_properties():
+    """
+
+    :return: list of all available properties
+    """
+    ret_naive = list(_name_to_funcs().keys()) + list(predict_medchem.all_predictors().keys()) + \
+                ["Total alert count","Lipinski violations","cns_mpo",
+                 "Lilly status", "Lilly demerits", "Lilly explanation"]
+    # convert the Brent filters etc
+    ret_all = []
+    for k in ret_naive:
+        if k in alert_obj.filters:
+            ret_all.append(f"{k} alert count")
+            ret_all.append(f"{k} explanation")
+        else:
+            ret_all.append(k)
+    return ret_all
+
+
+def calculate_properties(mols,predictor_dict,limit_to=None):
     """
 
     :param mols: list N of rdkit Molecule objects
     :param predictor_dict: output of predict_medchem.all_predictors()
+    :param limit_to_these: set of string to limit to
     :return:
     """
-    smiles = [MolToSmiles(m) for m in mols]
+    if limit_to is None:
+        # use them all
+        limit_to = set(all_properties())
+    else:
+        limit_to = set(limit_to)
+    extra = limit_to - set(all_properties())
+    # actually call the predictor dicts and create them if they are needed
+    predictor_dict_instantiated = { k:v() for k,v in predictor_dict.items()
+                                    if k in limit_to}
+    assert extra == set() , f"Didn't understand these properties: {extra}"
     rows = []
     for mol in mols:
         row = {}
-        for prop, pred in predictor_dict.items():
-            row[prop] = pred.predict_mols([mol])[0]
         for k, func in _name_to_funcs().items():
-            val = func(mol)
+            if k not in limit_to:
+                continue
+            if mol is None:
+                # can't calculate
+                val = np.nan
+            else:
+                val = func(mol)
             if k in alert_obj.filters:
-                row[f"{k} alert count"] = len(val)
-                row[f"{k} explanation"] = ",".join(val)
+                props =  [ [f"{k} alert count",len(val)],
+                           [f"{k} explanation", ",".join(val)]]
+                for lab,prop_val in props:
+                    # check if we want this property
+                    if lab not in all_properties():
+                        continue
+                    row[lab] = prop_val
             else:
                 row[k] = val
-        row['Total alert count'] = sum( (row[f"{k} alert count"]
-                                         for k in alert_obj.filters))
-        # see https://en.wikipedia.org/wiki/Lipinski%27s_rule_of_five
-        row["Lipinski violations"] = sum(((row["log_p"] > 5),
-                                          (row["Molecular weight"] > 500),
-                                          (row["H-bond donors"] > 5),
-                                          (row["H-bond acceptors"] > 5)))
-        row["cns_mpo"] = cns_mpo(log_p=row["log_p"], log_d=row["log_d"],
-                                 mw=row["Molecular weight"],
-                                 tpsa=row["Topological polar surface area"],
-                                 hbd=row["H-bond donors"],
-                                 pk_a=row["pk_a"])
+        if "Total alert count" in limit_to:
+            row['Total alert count'] = sum( (row[f"{k} alert count"]
+                                             for k in alert_obj.filters
+                                             if k in limit_to))
         rows.append(row)
+    # useful to know which are not null
+    i_mols_not_null = [[i, m] for i, m in enumerate(mols) if m is not None]
+    i_not_null = [i[0] for i in i_mols_not_null]
+    mols_not_null = [i[1] for i in i_mols_not_null]
+    if len(predictor_dict_instantiated) > 0:
+        # get all of the predicted properties at once.
+        # if we have mols that are none, deal with them gracefully
+        prop_to_idx_value = {}
+        for prop, pred in predictor_dict_instantiated.items():
+            if prop not in limit_to:
+                continue
+            prop_to_idx_value[prop] = \
+                dict(zip(i_not_null,pred.predict_mols(mols_not_null)))
+        for i, _ in enumerate(rows):
+            for prop_name,dict_v in prop_to_idx_value.items():
+                if i not in dict_v:
+                    rows[i][prop_name] = np.nan
+                else:
+                    rows[i][prop_name] = dict_v[i]
+    for row in rows:
+        if "Lipinski violations" in limit_to:
+            # see https://en.wikipedia.org/wiki/Lipinski%27s_rule_of_five
+            row["Lipinski violations"] = sum(((row["log_p"] > 5),
+                                              (row["Molecular weight"] > 500),
+                                              (row["H-bond donors"] > 5),
+                                              (row["H-bond acceptors"] > 5)))
+        if "cns_mpo" in limit_to:
+            row["cns_mpo"] = cns_mpo(log_p=row["log_p"], log_d=row["log_d"],
+                                     mw=row["Molecular weight"],
+                                     tpsa=row["Topological polar surface area"],
+                                     hbd=row["H-bond donors"],
+                                     pk_a=row["pk_a"])
     # lilly is called once for all smiles to speed up
-    for row, lilly in zip(rows,_smiles_to_lilly(smiles)):
-        for lilly_prop in ["Status", "Demerits", "Explanation"]:
-            row[f"Lilly {lilly_prop.lower()}"] = lilly[lilly_prop]
+    if "Lilly status" in limit_to or "Lilly demerits" in limit_to or "Lilly explanation" in limit_to:
+        # convert to smiles
+        smiles = [MolToSmiles(m) for m in mols_not_null]
+        lilly_values = _smiles_to_lilly(smiles)
+        idx_to_lilly_values = { i:v for i,v in zip(i_not_null,lilly_values)}
+        for i,_ in enumerate(rows):
+            for lilly_prop in ["Status", "Demerits", "Explanation"]:
+                prop_final = f"Lilly {lilly_prop.lower()}"
+                if prop_final in limit_to:
+                    if i in idx_to_lilly_values:
+                        rows[i][prop_final] = idx_to_lilly_values[i][lilly_prop]
+                    else:
+                        rows[i][prop_final] = np.nan
     return rows
 
 def _name_to_funcs():
@@ -356,3 +486,83 @@ def _name_to_funcs():
          "NIH":alert_obj.nih,
          "PAINS":alert_obj.pains
     }
+
+
+@click.group()
+def cli():
+    """
+    defines the click command line group
+    """
+
+
+@cli.command()
+def allowed_properties():
+    print("\n".join(all_properties()))
+
+def _safe_structure_convert_or_None(f_structure,val):
+    """
+
+    :param f_structure: convert from value to structure
+    :param val:  to convert to structure
+    :return: Mol object, or none if conversion failed (type error)
+    """
+    try:
+        return f_structure(val)
+    except TypeError:
+        return None
+
+def _properties_helper(input_file,structure_column,structure_type,output_file,
+                       limit_to,normalize_molecules):
+    """
+
+    :param input_file: input file csv
+    :param structure_column: whattype of columne to use, MOL, SMILES, or InChi
+    :param structure_type: see properties
+    :param output_file: see properties
+    :param limit_to: see properties
+    :return: nothing
+    """
+    df = pandas.read_csv(input_file)
+    structures = df[structure_column]
+    structure_dict = {"MOL":MolFromMolBlock,
+                      "SMILES":MolFromSmiles,
+                      "INCHI":MolFromInchi}
+    structure_f = structure_dict[structure_type]
+    RDLogger.DisableLog('rdApp.*')
+    mols = [ _safe_structure_convert_or_None(structure_f,s) for s in structures]
+    RDLogger.EnableLog('rdApp.*')
+    if normalize_molecules:
+        for m in mols:
+            utilities.normalize_mol_inplace(m)
+    if limit_to is None:
+        limit_list = all_properties()
+    else:
+        limit_list = [s.strip() for s in limit_to.split(",")]
+    df = pandas.DataFrame(mol_cv(mols,limit_to=limit_list))
+    df.to_csv(output_file,index=False)
+
+
+@cli.command()
+@click.option('--input_file', required=True,type=click.Path(exists=True,dir_okay=False),
+              help="Name of input file (must be csv)")
+@click.option("--structure_column",required=True,type=str,
+              help="name of the structure column in the file")
+@click.option("--structure_type",required=True,
+              type=click.Choice(["MOL","SMILES","INCHI"]),default="SMILES",
+              help="How to read the structure column")
+@click.option("--output_file",required=False,type=click.Path(dir_okay=False),
+              default=None,help="where to output the file")
+@click.option("--normalize_molecules",required=False,type=BoolType(),
+              default="FALSE",help="Whether to normalize molecule prior to fitting")
+@click.option("--limit_to",required=False,type=str,default=None,
+              help="CSV of list of allowed properties (see allowed-properties command). Only calculate these")
+def properties(**kw):
+    """
+
+    :param kw: see properties_helper
+    :return: see properties_helper
+    """
+    _properties_helper(**kw)
+
+if __name__ == '__main__':
+    cli()

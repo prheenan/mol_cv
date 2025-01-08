@@ -3,12 +3,18 @@ Unit tests for molecular CV
 """
 import unittest
 import tempfile
+import logging
+import pandas
 import numpy as np
-from rdkit.Chem import MolFromSmiles, Descriptors, MolToInchi
+from rdkit.Chem import MolFromSmiles, Descriptors, MolToInchi, MolToSmiles, MolToMolBlock
 from rdkit import RDLogger
+from click.testing import CliRunner
 import mol_cv
 import predict_medchem
 import load_medchem_data
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 
@@ -153,6 +159,49 @@ class MyTestCase(unittest.TestCase):
                 assert output["Explanation"] == explanation, output["Explanation"]
             self.i_subtest += 1
     RDLogger.EnableLog('rdApp.*')
+
+    def test_96_predictor_list(self):
+        """
+        Test the cli functionality of the predictor list of properties
+        """
+        runner = CliRunner()
+        # make sure just listing the properties works
+        with self.subTest(self.i_subtest):
+            result = runner.invoke(mol_cv.allowed_properties,
+                                   catch_exceptions=False)
+            assert result.output.strip().split("\n") == mol_cv.all_properties()
+        self.i_subtest += 1
+
+    def test_96_predictor_properties(self):
+        """
+        Test the cli functionality of the predictor properties
+        """
+        runner = CliRunner()
+        mols = [None,None,MolFromSmiles("CCCC")]
+        smiles = [ MolToSmiles(m) if m is not None else None
+                   for m in mols]
+        inchi = [ MolToInchi(m) if m is not None else None
+                  for m in mols]
+        molfile = [ MolToMolBlock(m) if m is not None else None
+                    for m in mols]
+        df = pandas.DataFrame({"SMILES":smiles,
+                               "INCHI":inchi,
+                               "MOL":molfile})
+        with (tempfile.NamedTemporaryFile(suffix=".csv") as f_input,
+              tempfile.NamedTemporaryFile(suffix=".csv") as f_output):
+            args = ['--input_file',f_input.name,
+                    '--output_file',f_output.name]
+            df.to_csv(f_input.name,index=False)
+            for col in df.columns:
+                args_col = args + ["--structure_column",col,"--structure_type",col]
+                logger.info( "test_96_predictor_properties:: running properties with: {:s}".\
+                             format(" ".join(args_col)))
+                with self.subTest(self.i_subtest):
+                    result = runner.invoke(mol_cv.properties,args_col,
+                                           catch_exceptions=False)
+                    assert result.exit_code == 0
+                self.i_subtest += 1
+
 
     def test_98_predictor_fit(self):
         """

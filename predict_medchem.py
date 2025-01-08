@@ -8,7 +8,9 @@ TBD:
 - LogP
 - LogS
 """
+from collections import defaultdict
 import os
+import functools
 import tempfile
 import json
 from collections import Counter
@@ -548,10 +550,16 @@ def all_predictors(**kw):
     Convenience function to get all predictors
 
     :param kw: passed to  cache_by_df
-    :return: dictionary of property name to predictor
+    :return: dictionary of property name to predictor lambda; call the
+    lambda to generate the predictor
     """
-    return { n:cache_by_df(predictor_name=n,**kw)
-             for n in load_medchem_data.name_to_load_functions().keys()}
+    predictor_properties = defaultdict(dict)
+    # logD needs a special generator because it does a better job fitting
+    predictor_properties["log_d"] = {"generator":rdFingerprintGenerator.GetTopologicalTorsionGenerator}
+    dict_to_return = { n : functools.\
+        partial(cache_by_df,predictor_name=n,**(predictor_properties[n] | kw))
+        for n in load_medchem_data.name_to_load_functions().keys()}
+    return dict_to_return
 
 def log_d__predictor(**kw):
     """
