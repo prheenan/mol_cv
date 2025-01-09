@@ -70,5 +70,7 @@ The elemental composition (CHNO Analysis)?
 
 # TODO
 
+- Add licensing
 - Speed up caching of predictors
 - Tuning predictors
+- Adding desalting option

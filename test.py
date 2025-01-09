@@ -2,6 +2,7 @@
 Unit tests for molecular CV
 """
 import unittest
+from collections import Counter
 import tempfile
 import logging
 import pandas
@@ -14,6 +15,7 @@ from click.testing import CliRunner
 import mol_cv
 import predict_medchem
 import load_medchem_data
+import cv_plot
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -40,6 +42,11 @@ class MyTestCase(unittest.TestCase):
         set up the common data sets used for testing
         """
         cls.fda = load_medchem_data.load_fda_drugs()
+        cls.fda["cluster"] = predict_medchem.cluster(mols=list(cls.fda["mol"]),
+                                                     fingerprint_size=1024,
+                                                     cutoff=0.5)
+        counter = Counter(cls.fda["cluster"])
+        cls.fda["cluster_size"] = cls.fda["cluster"].map(counter)
 
     def test_99_predictors(self):
         """
@@ -161,6 +168,19 @@ class MyTestCase(unittest.TestCase):
                 assert output["Explanation"] == explanation, output["Explanation"]
             self.i_subtest += 1
     RDLogger.EnableLog('rdApp.*')
+
+    def test_95_cv_plot(self):
+        predictor_dict = {k: v() for k, v in
+                          predict_medchem.all_predictors().items()}
+        cluster_1 = self.fda.loc[self.fda["cluster"] == 2, "mol"]
+        with tempfile.NamedTemporaryFile(suffix=".gif") as f_out:
+            with self.subTest(self.i_subtest):
+                cv_plot.align_and_plot(list(cluster_1),
+                                       predictor_dict=predictor_dict,
+                                       w_pad=-5, duration=500,
+                                       image_height=360, image_width=900,
+                                       figsize=(7, 3),save_file=f_out.name)
+            self.i_subtest += 1
 
     def test_96_predictor_list(self):
         """

@@ -3,6 +3,7 @@ module defining the molecular CV
 """
 import tempfile
 import warnings
+import locale
 import os
 import re
 import sys
@@ -288,8 +289,17 @@ def _smiles_to_lilly_lines(smiles):
             fh.write("\n".join([f"{s} PRH_{i:012d}" for i,s in enumerate(smiles)]))
         args = ["ruby", "Lilly_Medchem_Rules.rb","-B",
                 os.path.join(tmp_dir,"bad"),input_f.name,]
-        output = subprocess.check_output(args,cwd=lilly_dir).decode(sys.stdout.encoding)
-        good_lines = [g.strip() for g in output.split("\n")]
+        res = subprocess.check_output(args,cwd=lilly_dir)
+        if res is not None:
+            default_encoding = sys.stdout.encoding
+            if default_encoding is not None:
+                enconding = default_encoding
+            else:
+                enconding = locale.getpreferredencoding()
+            good_lines = [g.strip()
+                          for g in res.decode(enconding).split("\n")]
+        else:
+            good_lines = []
         good_lines = [g for g in good_lines if len(g) > 0]
         bad_lines = []
         for smi_file in [os.path.join(tmp_dir,f"bad{i}.smi") for i in [0,1,2,3]]:
@@ -341,8 +351,9 @@ def mol_cv(mols,**kw):
     :param kw: passed to calculate_properties
     :return: calculated properties of molecules
     """
-    return calculate_properties(mols,predict_medchem.all_predictors(),
-                                **kw)
+    # instantiate the predictors
+    predictor_dict = { k:v() for k,v in predict_medchem.all_predictors().items()}
+    return calculate_properties(mols,predictor_dict,**kw)
 
 
 def all_properties():
@@ -449,7 +460,8 @@ def calculate_properties(mols,predictor_dict,limit_to=None):
         # then we  want one or more of the predicted properties and have mols
         # actually call the predictor dicts and create them if they are needed
         # this step is avoided elsewhere since the predictors are expensive
-        predictor_dict_instantiated = {k: v() for k, v in predictor_dict.items()
+        predictor_dict_instantiated = {k: v() if type(v) != predict_medchem.FittedModel else v
+                                       for k, v in predictor_dict.items()
                                        if k in limit_to}
         # we
         # get all of the predicted properties at once.

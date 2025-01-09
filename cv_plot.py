@@ -1,9 +1,10 @@
 """
 contains utilities for plotting, including the radar plots
 """
+import io
 import matplotlib.pyplot as plt
 import numpy as np
-
+import PIL
 from matplotlib.patches import Circle, RegularPolygon
 from matplotlib.path import Path
 from matplotlib.projections import register_projection
@@ -11,6 +12,93 @@ from matplotlib.projections.polar import PolarAxes
 from matplotlib.spines import Spine
 from matplotlib.transforms import Affine2D
 
+# pylint: disable=no-name-in-module
+from rdkit.Chem import rdFMCS, MolFromSmarts
+# pylint: disable=no-name-in-module
+from rdkit.Chem.AllChem import  Compute2DCoords, GenerateDepictionMatching2DStructure
+from rdkit.Chem.Draw.rdMolDraw2D import PrepareMolForDrawing
+from rdkit.Chem.Draw import rdMolDraw2D
+from rdkit.Chem.Draw import MolsToGridImage
+import predict_medchem
+import mol_cv
+
+def white_to_transparency(img):
+    """
+
+    :param img: pixels,RBG (N,M,3)
+    :return: RBGA where white is made transparent
+    """
+    x = np.asarray(img.convert('RGBA')).copy()
+    x[:, :, 3] = (255 * (x[:, :, :3] != 255).any(axis=2)).astype(np.uint8)
+    return x
+
+
+def align_cluster(mols):
+    """
+
+    :param mols: list, N of molecules
+    :return: highlight_substructure
+    """
+    # see https://github.com/rdkit/rdkit/discussions/4120
+    mcs = rdFMCS.FindMCS(mols)
+    template = MolFromSmarts(mcs.smartsString)
+    Compute2DCoords(template) #coordMap={0:Point2D(0,0])})
+    PrepareMolForDrawing(template)
+    for m in mols:
+        GenerateDepictionMatching2DStructure(m , template)
+    highlight_substructure = []
+    for m in mols:
+        match1 = m.GetSubstructMatch(template)
+        target_atm1 = []
+        for atom in m.GetAtoms():
+            if atom.GetIdx() not in match1:
+                target_atm1.append(atom.GetIdx())
+        highlight_substructure.append(target_atm1)
+    return highlight_substructure
+
+def align_and_plot(mols,predictor_dict=None,w_pad=-5,duration=500,
+                   image_height=360,image_width=900,figsize=(7, 3),
+                   save_file='animated_plot.gif'):
+    """
+
+    :param mols: list, length N of molecules
+    :param predictor_dict: see output of predict_medchem.all_predictors()
+    :param w_pad: padding for width
+    :param duration: duration of gif
+    :param image_height: pixel height
+    :param image_width: pixel width
+    :param figsize: width and height of figsize
+    :param save_file:  name of save file
+    :return:
+    """
+    if predictor_dict is None:
+        predictor_dict = predict_medchem.all_predictors()
+    rows = mol_cv.calculate_properties(mols, predictor_dict)
+    highlight_substructure = align_cluster(mols)
+    # see https://www.rdkit.org/docs/source/rdkit.Chem.Draw.rdMolDraw2D.html#rdkit.Chem.Draw.rdMolDraw2D.MolDrawOptions
+    dopts = rdMolDraw2D.MolDrawOptions()
+    dopts.drawMolsSameScale = True
+    dopts.centreMoleculesBeforeDrawing = False
+    dopts.bgColor = None
+    png_grid = MolsToGridImage(mols, drawOptions=dopts, molsPerRow=1,
+                               subImgSize=(image_width, image_height),
+                               returnPNG=False,
+                               highlightAtomLists=highlight_substructure)
+    png_array = white_to_transparency(png_grid)
+    individual_images = [png_array[i * image_height:(i + 1) * image_height, :, :]
+                         for i in range(len(mols))]
+    # previous line prevents output from displaying in cell
+    images = []
+    for row, image in zip(rows, individual_images):
+        fig = cv_plot_fig(row, image_mol=image, turn_imshow_axis_off=True,
+                          w_pad=w_pad,figsize=figsize)
+        buf = io.BytesIO()
+        fig.savefig(buf, bbox_inches='tight')
+        buf.seek(0)
+        images.append(PIL.Image.open(buf))
+    images[0].save(save_file, save_all=True, append_images=images,
+                   duration=duration, loop=0)
+    return images
 
 def cv_plot_fig(row,image_mol,turn_imshow_axis_off=True,w_pad=-2.5,
                 figsize=(7, 3),width_ratios =None,**kw_imshow):
@@ -37,10 +125,9 @@ def cv_plot_fig(row,image_mol,turn_imshow_axis_off=True,w_pad=-2.5,
         ["-cLogD", -row["log_d"]],
     ]
 
-    N = len(name_vals_bad)
-    theta = radar_factory(N, frame='polygon')
+    theta = radar_factory(len(name_vals_bad), frame='polygon')
 
-    fig, axs = plt.subplots(figsize=figsize, subplot_kw=dict(projection="radar"),
+    fig, axs = plt.subplots(figsize=figsize, subplot_kw={'projection':"radar"},
                             nrows=1, ncols=3, width_ratios=width_ratios)
     axs[1].remove()
     axs[1] = fig.add_subplot(1, 3, 2)

@@ -22,7 +22,7 @@ repos:
           "--fail-on=E,W", # fail if errors, critical, or warnings (refactor / convention OK)
           "--disable=invalid-name,no-name-in-module,protected-access", # disable errors like ' No name 'MolToSmiles' in module 'rdkit.Chem' (no-name-in-module)' since rdkit special
           "-rn", # Only display messages
-          '--extension-pkg-allow-list=rdkit.Chem.rdMolDescriptors,rdkit.Chem.rdFingerprintGenerator'
+          '--extension-pkg-allow-list=rdkit.Chem.Draw.rdMolDraw2D,rdkit.Chem.rdFMCS.rdFMCS,rdkit.Chem.AllChem,rdkit.Chem.rdMolDescriptors,rdkit.Chem.rdFingerprintGenerator'
         ]
     - id: pytest
       name: pytest
