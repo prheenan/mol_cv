@@ -11,16 +11,26 @@ from rdkit.Chem import MolFromSmiles, Descriptors, MolToInchi, MolToSmiles, MolT
 from rdkit.Chem.inchi import MolFromInchi
 from rdkit import RDLogger
 from click.testing import CliRunner
-
+from PIL import Image, ImageSequence
 import mol_cv
 import predict_medchem
 import load_medchem_data
-import cv_plot
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+def read_gif(file_name):
+    """
+    see https://stackoverflow.com/questions/74731252/fastest-way-to-load-an-animated-gif-in-python-into-a-numpy-array
 
+    :param file_name: gif to read in
+    :return: gifarray
+    """
+    with Image.open(file_name) as im:
+        return np.array([
+                np.array(frame.convert('RGBA'))
+                for frame in ImageSequence.Iterator(im)
+        ])
 
 class MyTestCase(unittest.TestCase):
     """
@@ -175,11 +185,24 @@ class MyTestCase(unittest.TestCase):
         cluster_1 = self.fda.loc[self.fda["cluster"] == 2, "mol"]
         with tempfile.NamedTemporaryFile(suffix=".gif") as f_out:
             with self.subTest(self.i_subtest):
-                cv_plot.align_and_plot(list(cluster_1),
-                                       predictor_dict=predictor_dict,
-                                       w_pad=-5, duration=500,
-                                       image_height=360, image_width=900,
-                                       figsize=(7, 3),save_file=f_out.name)
+                mol_cv.align_and_plot(list(cluster_1),
+                                      predictor_dict=predictor_dict,
+                                      output_file=f_out.name)
+            gif_prior = read_gif(f_out.name)
+            self.i_subtest += 1
+            # now test the command line version
+            with self.subTest(self.i_subtest):
+                runner = CliRunner()
+                args = ['--input_file',"./data/cluster_example.csv",
+                        '--output_file',f_out.name,
+                        "--structure_column","SMILES",
+                        "--structure_type","SMILES"]
+                runner.invoke(mol_cv.radar_plot,args=args,catch_exceptions=False)
+            self.i_subtest += 1
+            gif_post = read_gif(f_out.name)
+            # make sure the pre and post files match
+            with self.subTest(i=self.i_subtest):
+                assert (gif_post == gif_prior).all()
             self.i_subtest += 1
 
     def test_96_predictor_list(self):

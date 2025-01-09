@@ -19,8 +19,6 @@ from rdkit.Chem.AllChem import  Compute2DCoords, GenerateDepictionMatching2DStru
 from rdkit.Chem.Draw.rdMolDraw2D import PrepareMolForDrawing
 from rdkit.Chem.Draw import rdMolDraw2D
 from rdkit.Chem.Draw import MolsToGridImage
-import predict_medchem
-import mol_cv
 
 def white_to_transparency(img):
     """
@@ -56,24 +54,26 @@ def align_cluster(mols):
         highlight_substructure.append(target_atm1)
     return highlight_substructure
 
-def align_and_plot(mols,predictor_dict=None,w_pad=-5,duration=500,
-                   image_height=360,image_width=900,figsize=(7, 3),
-                   save_file='animated_plot.gif'):
+def plot_mol_with_properties(mols,rows,w_pad=-5,duration=2000,
+                             image_height=None,image_width=None,figsize=(7, 3),
+                             output_file='animated_plot.gif',dpi=300):
     """
 
     :param mols: list, length N of molecules
-    :param predictor_dict: see output of predict_medchem.all_predictors()
+    :param row: list, length N, of dictionary of properties
     :param w_pad: padding for width
     :param duration: duration of gif
     :param image_height: pixel height
     :param image_width: pixel width
     :param figsize: width and height of figsize
-    :param save_file:  name of save file
+    :param output_file:  name of save file
     :return:
     """
-    if predictor_dict is None:
-        predictor_dict = predict_medchem.all_predictors()
-    rows = mol_cv.calculate_properties(mols, predictor_dict)
+    width_ratios = [1,3,1]
+    if image_height is None:
+        image_height = int(np.ceil(dpi * figsize[1]))
+    if image_width is None:
+        image_width = int(np.ceil(dpi * figsize[0]))
     highlight_substructure = align_cluster(mols)
     # see https://www.rdkit.org/docs/source/rdkit.Chem.Draw.rdMolDraw2D.html#rdkit.Chem.Draw.rdMolDraw2D.MolDrawOptions
     dopts = rdMolDraw2D.MolDrawOptions()
@@ -85,28 +85,32 @@ def align_and_plot(mols,predictor_dict=None,w_pad=-5,duration=500,
                                returnPNG=False,
                                highlightAtomLists=highlight_substructure)
     png_array = white_to_transparency(png_grid)
-    individual_images = [png_array[i * image_height:(i + 1) * image_height, :, :]
-                         for i in range(len(mols))]
+    individual_images = [
+        png_array[i * image_height:(i + 1) * image_height, :, :]
+        for i in range(len(mols))]
     # previous line prevents output from displaying in cell
     images = []
     for row, image in zip(rows, individual_images):
         fig = cv_plot_fig(row, image_mol=image, turn_imshow_axis_off=True,
-                          w_pad=w_pad,figsize=figsize)
+                          w_pad=w_pad, figsize=figsize,dpi=dpi,
+                          width_ratios=width_ratios)
         buf = io.BytesIO()
         fig.savefig(buf, bbox_inches='tight')
         buf.seek(0)
         images.append(PIL.Image.open(buf))
-    images[0].save(save_file, save_all=True, append_images=images,
+    images[0].save(output_file, save_all=True, append_images=images,
                    duration=duration, loop=0)
     return images
 
+
 def cv_plot_fig(row,image_mol,turn_imshow_axis_off=True,w_pad=-2.5,
-                figsize=(7, 3),width_ratios =None,**kw_imshow):
+                figsize=(7, 3),width_ratios =None,dpi=300,**kw_imshow):
     """
 
     :param row: molecular properties
     :param image_mol: image of the molecule
     :param turn_imshow_axis_off: if true, turn imshow axis off
+    :param dpi: for figure
     :param kw_imshow: passed to plt.imshow()
     :return: matplotlib figure
     """
@@ -128,7 +132,8 @@ def cv_plot_fig(row,image_mol,turn_imshow_axis_off=True,w_pad=-2.5,
     theta = radar_factory(len(name_vals_bad), frame='polygon')
 
     fig, axs = plt.subplots(figsize=figsize, subplot_kw={'projection':"radar"},
-                            nrows=1, ncols=3, width_ratios=width_ratios)
+                            nrows=1, ncols=3, width_ratios=width_ratios,
+                            dpi=dpi)
     axs[1].remove()
     axs[1] = fig.add_subplot(1, 3, 2)
 

@@ -29,6 +29,7 @@ with warnings.catch_warnings():
 import utilities
 from utilities import normalize_smiles
 import predict_medchem
+import cv_plot
 
 
 pattern_demerits = re.compile(pattern=r"""
@@ -446,7 +447,7 @@ def calculate_properties(mols,predictor_dict,limit_to=None):
         if "Total alert count" in limit_to:
             row['Total alert count'] = sum( (row[f"{k} alert count"]
                                              for k in alert_obj.filters
-                                             if k in limit_to))
+                                             if f"{k} alert count" in limit_to))
         rows.append(row)
     # useful to know which are not null
     i_mols_not_null = [[i, m] for i, m in enumerate(mols) if m is not None]
@@ -460,7 +461,7 @@ def calculate_properties(mols,predictor_dict,limit_to=None):
         # then we  want one or more of the predicted properties and have mols
         # actually call the predictor dicts and create them if they are needed
         # this step is avoided elsewhere since the predictors are expensive
-        predictor_dict_instantiated = {k: v() if type(v) != predict_medchem.FittedModel else v
+        predictor_dict_instantiated = {k: v() if not isinstance(v,predict_medchem.FittedModel) else v
                                        for k, v in predictor_dict.items()
                                        if k in limit_to}
         # we
@@ -492,7 +493,7 @@ def calculate_properties(mols,predictor_dict,limit_to=None):
         smiles = [MolToSmiles(m) for m in mols_not_null]
         if len(mols_not_null) > 0:
             lilly_values = _smiles_to_lilly(smiles)
-            idx_to_lilly_values = { i:v for i,v in zip(i_not_null,lilly_values)}
+            idx_to_lilly_values =  dict(zip(i_not_null, lilly_values))
         else:
             idx_to_lilly_values = {}
         for i,_ in enumerate(rows):
@@ -537,16 +538,21 @@ def _name_to_funcs():
     }
 
 
-@click.group()
-def cli():
-    """
-    defines the click command line group
-    """
 
 
-@cli.command()
-def allowed_properties():
-    print("\n".join(all_properties()))
+def align_and_plot(mols,predictor_dict=None,**kw):
+    """
+
+    :param mols: list, length N of molecules
+    :param predictor_dict: see output of predict_medchem.all_predictors()
+    :param kw: see plot_mol_with_properties
+    :return:
+    """
+    if predictor_dict is None:
+        predictor_dict = predict_medchem.all_predictors()
+    rows = calculate_properties(mols, predictor_dict)
+    return cv_plot.plot_mol_with_properties(mols=mols,rows=rows,**kw)
+
 
 def _safe_structure_convert_or_None(f_structure,val):
     """
@@ -560,16 +566,80 @@ def _safe_structure_convert_or_None(f_structure,val):
     except TypeError:
         return None
 
-def _properties_helper(input_file,structure_column,structure_type,output_file,
-                       limit_to,normalize_molecules):
+@click.group()
+def cli():
+    """
+    defines the click command line group
     """
 
-    :param input_file: input file csv
-    :param structure_column: whattype of columne to use, MOL, SMILES, or InChi
-    :param structure_type: see properties
-    :param output_file: see properties
-    :param limit_to: see properties
-    :return: nothing
+def _radar_helper(input_file,structure_column,structure_type,
+                  normalize_molecules,output_file,**kw):
+    """
+
+    :param input_file: input file
+    :param structure_column:
+    :param structure_type:
+    :param normalize_molecules:
+    :param output_file: where to output
+    :param kw:
+    :return:
+    """
+    if output_file is None:
+        output_file = input_file + ".gif"
+    mols = _read_and_normalize(input_file,structure_column,structure_type,
+                               normalize_molecules)
+    return align_and_plot(mols, output_file=output_file,**kw)
+
+@cli.command()
+@click.option('--input_file', required=True,
+              type=click.Path(exists=True,dir_okay=False),
+              help="Name of input file (must be csv)")
+@click.option("--structure_column",required=False,type=str,default="SMILES",
+              help="name of the structure column in the file")
+@click.option("--structure_type",
+              type=click.Choice(["MOL","SMILES","INCHI"]),required=False,
+              default="SMILES",help="How to read the structure column")
+@click.option("--output_file",required=False,type=click.Path(dir_okay=False),
+              default=None,help="where to output the file")
+@click.option("--normalize_molecules",required=False,type=BoolType(),
+              default="FALSE",help="Whether to normalize molecule prior to fitting")
+@click.option("--dpi",required=False,type=float,default=300,
+              help="dpi of plot")
+@click.option("--w_pad",required=False,type=float,default=-5,
+              help="width padding")
+@click.option("--duration",required=False,type=int,default=2000,
+              help="duration of frame padding")
+@click.option("--image_height",required=False,type=int,default=None,
+              help="mol image height in pixels; generally should not need to set")
+@click.option("--image_width",required=False,type=int,default=None,
+              help="mol image width in pixels; generally should not need to set")
+def radar_plot(**kw):
+    """
+    make a radar plot
+    :param kw: see _radar_helper
+    """
+    _radar_helper(**kw)
+
+
+@cli.command()
+def allowed_properties():
+    """
+
+    :return: print list of allowed properties
+    """
+    print("\n".join(all_properties()))
+
+
+def _read_and_normalize(input_file,structure_column,structure_type,
+                        normalize_molecules):
+    """
+    Convenience function for reading moleules from a file
+
+    :param input_file: name of file
+    :param structure_column:  name of sturcutre column
+    :param structure_type:  one of MOL, SMILES, INCHI
+    :param normalize_molecules:  if truem normalize all the molecules
+    :return:  list of molecules from file
     """
     df = pandas.read_csv(input_file)
     structures = df[structure_column]
@@ -583,22 +653,41 @@ def _properties_helper(input_file,structure_column,structure_type,output_file,
     if normalize_molecules:
         for m in mols:
             utilities.normalize_mol_inplace(m)
+    return mols
+
+def _properties_helper(input_file,structure_column,structure_type,output_file,
+                       limit_to,normalize_molecules):
+    """
+
+    :param input_file: input file csv
+    :param structure_column: whattype of columne to use, MOL, SMILES, or InChi
+    :param structure_type: see properties
+    :param output_file: see properties
+    :param limit_to: see properties
+    :return: nothing
+    """
+    if output_file is None:
+        output_file = input_file + "__mol_cv.csv"
     if limit_to is None:
         limit_list = all_properties()
     else:
         limit_list = [s.strip() for s in limit_to.split(",")]
+    mols = _read_and_normalize(input_file,structure_column,structure_type,
+                               normalize_molecules)
     df = pandas.DataFrame(mol_cv(mols,limit_to=limit_list))
     df.to_csv(output_file,index=False)
 
 
 @cli.command()
-@click.option('--input_file', required=True,type=click.Path(exists=True,dir_okay=False),
+@click.option('--input_file', required=True,
+              type=click.Path(exists=True,dir_okay=False),
               help="Name of input file (must be csv)")
-@click.option("--structure_column",required=True,type=str,
+@click.option("--structure_column",required=False,type=str,
+              default="SMILES",
               help="name of the structure column in the file")
-@click.option("--structure_type",required=True,
-              type=click.Choice(["MOL","SMILES","INCHI"]),default="SMILES",
-              help="How to read the structure column")
+@click.option("--structure_type",
+              type=click.Choice(["MOL","SMILES","INCHI"]),required=False,
+              default="SMILES",help="How to read the structure column")
 @click.option("--output_file",required=False,type=click.Path(dir_okay=False),
               default=None,help="where to output the file")
 @click.option("--normalize_molecules",required=False,type=BoolType(),
