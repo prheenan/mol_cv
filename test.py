@@ -7,8 +7,10 @@ import logging
 import pandas
 import numpy as np
 from rdkit.Chem import MolFromSmiles, Descriptors, MolToInchi, MolToSmiles, MolToMolBlock
+from rdkit.Chem.inchi import MolFromInchi
 from rdkit import RDLogger
 from click.testing import CliRunner
+
 import mol_cv
 import predict_medchem
 import load_medchem_data
@@ -177,31 +179,67 @@ class MyTestCase(unittest.TestCase):
         Test the cli functionality of the predictor properties
         """
         runner = CliRunner()
-        mols = [None,None,MolFromSmiles("CCCC")]
-        smiles = [ MolToSmiles(m) if m is not None else None
-                   for m in mols]
-        inchi = [ MolToInchi(m) if m is not None else None
-                  for m in mols]
-        molfile = [ MolToMolBlock(m) if m is not None else None
-                    for m in mols]
-        df = pandas.DataFrame({"SMILES":smiles,
-                               "INCHI":inchi,
-                               "MOL":molfile})
-        with (tempfile.NamedTemporaryFile(suffix=".csv") as f_input,
-              tempfile.NamedTemporaryFile(suffix=".csv") as f_output):
-            args = ['--input_file',f_input.name,
-                    '--output_file',f_output.name]
-            df.to_csv(f_input.name,index=False)
-            for col in df.columns:
-                args_col = args + ["--structure_column",col,"--structure_type",col]
-                logger.info( "test_96_predictor_properties:: running properties with: {:s}".\
-                             format(" ".join(args_col)))
-                with self.subTest(self.i_subtest):
-                    result = runner.invoke(mol_cv.properties,args_col,
-                                           catch_exceptions=False)
-                    assert result.exit_code == 0
-                self.i_subtest += 1
-
+        # try out asprin, biotin, and viamin D3
+        # pylint: disable=line-too-long
+        mols = [MolFromInchi(r"InChI=1S/C9H8O4/c1-6(10)13-8-5-3-2-4-7(8)9(11)12/h2-5H,1H3,(H,11,12)"),MolFromInchi(r"InChI=1S/C10H16N2O3S/c13-8(14)4-2-1-3-7-9-6(5-16-7)11-10(15)12-9/h6-7,9H,1-5H2,(H,13,14)(H2,11,12,15)/t6-,7-,9-/m0/s1"),MolFromInchi(r"InChI=1S/C27H44O/c1-19(2)8-6-9-21(4)25-15-16-26-22(10-7-17-27(25,26)5)12-13-23-18-24(28)14-11-20(23)3/h12-13,19,21,24-26,28H,3,6-11,14-18H2,1-2,4-5H3/b22-12+,23-13-/t21-,24+,25-,26+,27-/m1/s1")]
+        predict_objects = {k: v() for k, v in
+                           predict_medchem.all_predictors().items()}
+        # I hand-checked all these values in rdkit on 2024-01-09
+        df_expected  = pandas.DataFrame({
+            'H-bond acceptors':[3,4,1],
+            'H-bond donors': [1,3,1],
+            'Rotatable bonds':[2,5,6],
+            "Lilly status": ["Hard reject","Hard reject","Pass"],
+            "Lilly demerits":[100,100,20],
+            "Lilly explanation":["1 matches to 'phenolic_ester_or_carbamate'",
+                                 "1 matches to 'biotin'",
+                                 "too_many_atoms"]
+        })
+        for k,v in predict_objects.items():
+            df_expected[k] = v.predict_mols(mols)
+        # try making none, 1, or all be None
+        for make_none in [ [], [0],[0,2],[1],[0,1,2]]:
+            mols_here = [m if i not in make_none else None
+                         for i,m in enumerate(mols)]
+            smiles = [ MolToSmiles(m) if m is not None else None
+                       for m in mols_here]
+            inchi = [ MolToInchi(m) if m is not None else None
+                      for m in mols_here]
+            molfile = [ MolToMolBlock(m) if m is not None else None
+                        for m in mols_here]
+            df = pandas.DataFrame({"SMILES":smiles,
+                                   "INCHI":inchi,
+                                   "MOL":molfile})
+            with (tempfile.NamedTemporaryFile(suffix=".csv") as f_input,
+                  tempfile.NamedTemporaryFile(suffix=".csv") as f_output):
+                args = ['--input_file',f_input.name,
+                        '--output_file',f_output.name]
+                df.to_csv(f_input.name,index=False)
+                # for the full data set, use all the columns, otherwise just SMILES
+                if len(make_none) == 0:
+                    cols_to_use = df.columns
+                else:
+                    cols_to_use = ["SMILES"]
+                for col in cols_to_use:
+                    args_col = args + ["--structure_column",col,"--structure_type",col]
+                    logger.info( "test_96_predictor_properties:: running properties with: {:s}".\
+                                 format(" ".join(args_col)))
+                    with self.subTest(self.i_subtest):
+                        result = runner.invoke(mol_cv.properties,args_col,
+                                               catch_exceptions=False)
+                        assert result.exit_code == 0
+                    self.i_subtest += 1
+                    df_output = pandas.read_csv(f_output.name)
+                    # check the properties
+                    df_modified = df_expected.copy()
+                    # anywhere we made none should still be present as a row
+                    for i in make_none:
+                        df_modified.iloc[i, :] = np.nan
+                    for col_check in df_expected.columns:
+                        with self.subTest(self.i_subtest):
+                            pandas.testing.\
+                                assert_series_equal(df_output[col_check], df_modified[col_check],check_dtype=False)
+                        self.i_subtest += 1
 
     def test_98_predictor_fit(self):
         """

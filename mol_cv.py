@@ -363,6 +363,40 @@ def all_properties():
             ret_all.append(k)
     return ret_all
 
+def _calculate_val(mol,func):
+    """
+
+    :param mol: molecule
+    :param func:  function
+    :return: nan is mol is None, otherwise func(mol)
+    """
+    if mol is None:
+        return np.nan
+    else:
+        return func(mol)
+
+def _row_to_lipinski(row):
+    """
+
+    :param row: row with standard outputs defined
+    :return:  number of lipinski violations
+    """
+    return sum(((row["log_p"] > 5),
+                (row["Molecular weight"] > 500),
+                (row["H-bond donors"] > 5),
+                (row["H-bond acceptors"] > 5)))
+
+def _row_to_cns_mpo(row):
+    """
+
+    :param row: row with standard outputs defined
+    :return: cns mpo
+    """
+    return cns_mpo(log_p=row["log_p"], log_d=row["log_d"],
+                   mw=row["Molecular weight"],
+                   tpsa=row["Topological polar surface area"],
+                   hbd=row["H-bond donors"],
+                   pk_a=row["pk_a"])
 
 def calculate_properties(mols,predictor_dict,limit_to=None):
     """
@@ -378,30 +412,25 @@ def calculate_properties(mols,predictor_dict,limit_to=None):
     else:
         limit_to = set(limit_to)
     extra = limit_to - set(all_properties())
-    # actually call the predictor dicts and create them if they are needed
-    predictor_dict_instantiated = { k:v() for k,v in predictor_dict.items()
-                                    if k in limit_to}
     assert extra == set() , f"Didn't understand these properties: {extra}"
     rows = []
     for mol in mols:
         row = {}
         for k, func in _name_to_funcs().items():
-            if k not in limit_to:
-                continue
-            if mol is None:
-                # can't calculate
-                val = np.nan
-            else:
-                val = func(mol)
-            if k in alert_obj.filters:
-                props =  [ [f"{k} alert count",len(val)],
-                           [f"{k} explanation", ",".join(val)]]
+            needed = (f"{k} alert count" in limit_to) or (f"{k} explanation" in limit_to)
+            if (k in alert_obj.filters) and needed:
+                val = _calculate_val(mol, func)
+                props =  [ [f"{k} alert count",len(val) if str(val) != "nan" else np.nan],
+                           [f"{k} explanation", ",".join(val) if str(val) != "nan" else np.nan]]
                 for lab,prop_val in props:
                     # check if we want this property
-                    if lab not in all_properties():
+                    if lab not in limit_to:
                         continue
                     row[lab] = prop_val
             else:
+                if k not in limit_to:
+                    continue
+                val = _calculate_val(mol, func)
                 row[k] = val
         if "Total alert count" in limit_to:
             row['Total alert count'] = sum( (row[f"{k} alert count"]
@@ -412,7 +441,17 @@ def calculate_properties(mols,predictor_dict,limit_to=None):
     i_mols_not_null = [[i, m] for i, m in enumerate(mols) if m is not None]
     i_not_null = [i[0] for i in i_mols_not_null]
     mols_not_null = [i[1] for i in i_mols_not_null]
-    if len(predictor_dict_instantiated) > 0:
+    predictions_wanted = len(limit_to & predictor_dict.keys()) > 0
+    if (len(mols_not_null) == 0) and predictions_wanted:
+        # then we can't predict anything (no molecules), but we do want to
+        prop_to_idx_value = { k:{} for k in predictor_dict if k in limit_to}
+    else:
+        # then we  want one or more of the predicted properties and have mols
+        # actually call the predictor dicts and create them if they are needed
+        # this step is avoided elsewhere since the predictors are expensive
+        predictor_dict_instantiated = {k: v() for k, v in predictor_dict.items()
+                                       if k in limit_to}
+        # we
         # get all of the predicted properties at once.
         # if we have mols that are none, deal with them gracefully
         prop_to_idx_value = {}
@@ -421,6 +460,8 @@ def calculate_properties(mols,predictor_dict,limit_to=None):
                 continue
             prop_to_idx_value[prop] = \
                 dict(zip(i_not_null,pred.predict_mols(mols_not_null)))
+    if predictions_wanted:
+        # then at least one prediction wanted; loop through and set
         for i, _ in enumerate(rows):
             for prop_name,dict_v in prop_to_idx_value.items():
                 if i not in dict_v:
@@ -430,22 +471,18 @@ def calculate_properties(mols,predictor_dict,limit_to=None):
     for row in rows:
         if "Lipinski violations" in limit_to:
             # see https://en.wikipedia.org/wiki/Lipinski%27s_rule_of_five
-            row["Lipinski violations"] = sum(((row["log_p"] > 5),
-                                              (row["Molecular weight"] > 500),
-                                              (row["H-bond donors"] > 5),
-                                              (row["H-bond acceptors"] > 5)))
+            row["Lipinski violations"] = _row_to_lipinski(row)
         if "cns_mpo" in limit_to:
-            row["cns_mpo"] = cns_mpo(log_p=row["log_p"], log_d=row["log_d"],
-                                     mw=row["Molecular weight"],
-                                     tpsa=row["Topological polar surface area"],
-                                     hbd=row["H-bond donors"],
-                                     pk_a=row["pk_a"])
+            row["cns_mpo"] = _row_to_cns_mpo(row)
     # lilly is called once for all smiles to speed up
     if "Lilly status" in limit_to or "Lilly demerits" in limit_to or "Lilly explanation" in limit_to:
         # convert to smiles
         smiles = [MolToSmiles(m) for m in mols_not_null]
-        lilly_values = _smiles_to_lilly(smiles)
-        idx_to_lilly_values = { i:v for i,v in zip(i_not_null,lilly_values)}
+        if len(mols_not_null) > 0:
+            lilly_values = _smiles_to_lilly(smiles)
+            idx_to_lilly_values = { i:v for i,v in zip(i_not_null,lilly_values)}
+        else:
+            idx_to_lilly_values = {}
         for i,_ in enumerate(rows):
             for lilly_prop in ["Status", "Demerits", "Explanation"]:
                 prop_final = f"Lilly {lilly_prop.lower()}"

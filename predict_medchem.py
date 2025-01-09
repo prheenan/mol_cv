@@ -8,12 +8,10 @@ TBD:
 - LogP
 - LogS
 """
-from collections import defaultdict
+from collections import defaultdict, Counter
 import os
-import functools
 import tempfile
 import json
-from collections import Counter
 import pandas
 from tqdm import tqdm
 import numpy as np
@@ -545,6 +543,19 @@ def cache_by_df(predictor_name,force=False,limit=None,n_jobs=2,
         model = FittedModel().load_model(file_name)
     return model
 
+def _predictor_lambda(predictor_name,**kw):
+    """
+
+    :param name: name of predicted property
+    :param kw: additional keyworks
+    :return: lambda-style function; calling it will give the predictor
+    """
+    predictor_properties = defaultdict(dict)
+    # logD needs a special generator because it does a better job fitting
+    predictor_properties["log_d"] = {"generator":rdFingerprintGenerator.GetTopologicalTorsionGenerator}
+    kw_final = {"predictor_name":predictor_name,**(predictor_properties[predictor_name] | kw)}
+    return lambda : cache_by_df(**kw_final)
+
 def all_predictors(**kw):
     """
     Convenience function to get all predictors
@@ -553,11 +564,8 @@ def all_predictors(**kw):
     :return: dictionary of property name to predictor lambda; call the
     lambda to generate the predictor
     """
-    predictor_properties = defaultdict(dict)
-    # logD needs a special generator because it does a better job fitting
-    predictor_properties["log_d"] = {"generator":rdFingerprintGenerator.GetTopologicalTorsionGenerator}
-    dict_to_return = { n : functools.\
-        partial(cache_by_df,predictor_name=n,**(predictor_properties[n] | kw))
+
+    dict_to_return = { n : _predictor_lambda(predictor_name=n,**kw)
         for n in load_medchem_data.name_to_load_functions().keys()}
     return dict_to_return
 
@@ -568,7 +576,7 @@ def log_d__predictor(**kw):
     :param kw: passed to cache_by_df
     :return: see cache_by_df, except for log_d
     """
-    return cache_by_df(predictor_name="log_d",**kw)
+    return _predictor_lambda(predictor_name="log_d",**kw)()
 
 def pk_a__predictor(**kw):
     """
@@ -577,7 +585,7 @@ def pk_a__predictor(**kw):
     :param kw: passed to cache_by_df
     :return: see cache_by_df, except for pk_a
     """
-    return cache_by_df(predictor_name="pk_a",**kw)
+    return _predictor_lambda(predictor_name="pk_a",**kw)()
 
 def log_p__predictor(**kw):
     """
@@ -586,7 +594,7 @@ def log_p__predictor(**kw):
     :param kw: passed to cache_by_df
     :return: see cache_by_df, except for log_p
     """
-    return cache_by_df(predictor_name="log_p",**kw)
+    return _predictor_lambda(predictor_name="log_p",**kw)()
 
 def log_s__predictor(**kw):
     """
@@ -595,4 +603,4 @@ def log_s__predictor(**kw):
     :param kw: passed to cache_by_df
     :return: see cache_by_df, except for log_s
     """
-    return cache_by_df(predictor_name="log_s",**kw)
+    return _predictor_lambda(predictor_name="log_s",**kw)()
