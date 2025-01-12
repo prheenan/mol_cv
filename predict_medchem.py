@@ -196,6 +196,20 @@ def distances(fp_list,disable_tqdm=False):
         dists.extend(1 - x for x in sims)
     return dists
 
+def _single_cluster_list(distance_list,nfps,cutoff):
+    """
+
+    :param distance_list: DistData
+    :param nfps: number of fingerprints
+    :param cutoff:  cutoff
+    :return: list of cluster ids
+    """
+    mol_clusters = Butina.ClusterData(distance_list,nfps, cutoff,isDistData=True)
+    cluster_id_list = [0] * nfps
+    for idx, cluster_list in enumerate(mol_clusters, 1):
+        for member in cluster_list:
+            cluster_id_list[member] = idx
+    return cluster_id_list
 
 def cluster_ids(fp_list, cutoff=0.35,disable_tqdm=False):
     """
@@ -207,13 +221,13 @@ def cluster_ids(fp_list, cutoff=0.35,disable_tqdm=False):
     :return: list, length N, of arbitrary cluster IDs
     """
     nfps = len(fp_list)
-    mol_clusters = Butina.ClusterData(distances(fp_list,disable_tqdm=disable_tqdm),
-                                      nfps, cutoff,isDistData=True)
-    cluster_id_list = [0] * nfps
-    for idx, cluster_list in enumerate(mol_clusters, 1):
-        for member in cluster_list:
-            cluster_id_list[member] = idx
-    return cluster_id_list
+    distance_list = distances(fp_list, disable_tqdm=disable_tqdm)
+    if isinstance(cutoff,float):
+        ids = _single_cluster_list(distance_list, nfps=nfps, cutoff=cutoff)
+    else:
+        ids = [ _single_cluster_list(distance_list, nfps=nfps, cutoff=c)
+                for c in tqdm(cutoff,desc="Getting all IDs",disable=disable_tqdm)]
+    return ids
 
 def _mol_to_fingerprints(mols,fp_generator):
     return np.array([list(e)
@@ -248,6 +262,25 @@ def _grouped_train_test(X,y,groups,validation_size):
         [groups[i] for i in test_idx])
     return X_train, X_test, y_train, y_test, groups_train, groups_test
 
+def train_test_split_grouped(X,y,groups,validation_size,n_folds):
+    if groups is None:
+        X_train, X_test, y_train, y_test = train_test_split(X, y,
+                                                            random_state=42,
+                                                            test_size=validation_size)
+        # just use standard cross validation, not recommended due to overfit possibility
+        cv = n_folds
+        groups_train = None
+        groups_test = None
+    else:
+        X_train, X_test, y_train, y_test, groups_train, groups_test  = \
+            _grouped_train_test(X,y,groups, validation_size)
+        # use 5 fold validation when we fit
+        if n_folds > 1:
+            cv = GroupKFold(n_splits=n_folds)
+        else:
+            cv = 1
+    return cv, X_train, X_test, y_train, y_test, groups_train, groups_test
+
 def cross_validate(X,y,groups,params,n_folds,validation_size,n_jobs,
                    verbose=False):
     """
@@ -262,29 +295,20 @@ def cross_validate(X,y,groups,params,n_folds,validation_size,n_jobs,
     :return: tuple of
         tuple of <fitted grid, X_train, X_test, y_train, y_test, groups_trian, groups_test>
     """
-    if groups is None:
-        X_train, X_test, y_train, y_test = train_test_split(X, y,
-                                                            random_state=42,
-                                                            test_size=validation_size)
-        # just use standard cross validation, not recommended due to overfit possibility
-        cv = n_folds
-        groups_train = None
-        groups_test = None
-    else:
-        X_train, X_test, y_train, y_test, groups_train, groups_test  = \
-            _grouped_train_test(X,y,groups, validation_size)
-        # use 5 fold validation when we fit
-        cv = GroupKFold(n_splits=n_folds)
+    cv, X_train, X_test, y_train, y_test, groups_train, groups_test = \
+        train_test_split_grouped(X=X, y=y, groups=groups,
+                                 validation_size=validation_size,
+                                 n_folds=n_folds)
     # Use "hist" for constructing the trees, with early stopping enabled.
-    model = xgb.XGBRegressor()
+    model = xgb.XGBRegressor(n_jobs=n_jobs)
     grid = GridSearchCV(estimator=model, cv=cv,
-                        param_grid=params,
-                        scoring='r2', n_jobs=n_jobs,
-                        verbose=verbose, return_train_score=True)
+                        param_grid=params,n_jobs=None,
+                        scoring='r2',verbose=verbose, return_train_score=True)
     grid.fit(X=X_train, y=y_train, groups=groups_train)
     return grid, X_train, X_test, y_train, y_test, groups_train, groups_test
 
-def _sanitize_generator(generator,radius,fingerprint_size):
+def _sanitize_generator(generator=rdFingerprintGenerator.GetMorganGenerator,
+                        radius=2,fingerprint_size=1024):
     """
 
     :param generator: name of generator, like  rdFingerprintGenerator.GetRDKitFPGenerator
@@ -357,7 +381,7 @@ def cluster(mols,fingerprint_size,cutoff,generator=None,disable_tqdm=False):
 
     :param mols: see get_generator_error
     :param fingerprint_size: see get_generator_error
-    :param cutoff: see get_generator_error
+    :param cutoff: integer or list N or integers
     :param disable_tqdm: if true, disable tqdm
     :return: list of ids corresponding to molecules
     """
@@ -381,6 +405,23 @@ def _all_names_and_generators():
         ['rdkgen', rdFingerprintGenerator.GetRDKitFPGenerator]
     ]
 
+def _cluster_info(all_ids_kw):
+    """
+
+    :param all_ids_kw: list, length N, each a tuple like ids, and keywords
+     used to generate those clusters
+    :return:
+    """
+    df_sizes = []
+    for ids, kw_other in all_ids_kw:
+        sizes = list(Counter(ids).values())
+        row_stats = {"Number of groups": len(set(ids)),
+                     "Group size mean": np.mean(sizes),
+                     "Group size stdev": np.std(sizes), **kw_other}
+        df_sizes.append(pandas.DataFrame({"Group size": sizes, **row_stats}))
+    df_cat_sizes = pandas.concat(df_sizes)
+    return df_cat_sizes
+
 def cluster_stats(mols,n_points=20,fingerprint_size=None,
                   disable_tqdm=False,**kw):
     """
@@ -401,16 +442,7 @@ def cluster_stats(mols,n_points=20,fingerprint_size=None,
     all_ids_kw = []
     for kw_tmp in tqdm(kws,disable=disable_tqdm):
         all_ids_kw.append([cluster(mols, disable_tqdm=disable_tqdm,**kw_tmp), kw_tmp])
-    rows = []
-    df_sizes = []
-    for ids, kw_other in all_ids_kw:
-        sizes = list(Counter(ids).values())
-        row_stats = {"Number of groups": len(set(ids)),
-                     "Group size mean": np.mean(sizes),
-                     "Group size stdev": np.std(sizes), **kw_other}
-        rows.append(row_stats)
-        df_sizes.append(pandas.DataFrame({"Group size": sizes, **row_stats}))
-    df_cat_sizes = pandas.concat(df_sizes)
+    df_cat_sizes = _cluster_info(all_ids_kw)
     return df_cat_sizes
 
 
@@ -443,62 +475,52 @@ def compare_fingerprints(mols,pka,ids,generators=None,
         errors_and_grid_array.append(errors_grid)
     return errors_and_grid_array
 
-def fit_clustered_model(mols,vals,njobs=-2,fingerprint_size = 1024,
-                        cutoff = 0.6,radius = 2,return_all=False,
+def fit_clustered_model(mols,vals,n_jobs=-1,fingerprint_size = 1024,
+                        cutoff = 0.6,radius = 2,
                         generator=rdFingerprintGenerator.GetMorganGenerator,
-                        n_estimators=200,max_depth=2,learning_rate=0.3,**kw):
+                        n_estimators=200,max_depth=2,learning_rate=0.3,
+                        subsample=1,validation_size=0.1,**kw):
     """
 
     :param mols: molecules, length N
     :param vals: y values, length N
-    :param njobs:  number of jobs
+    :param n_jobs:  number of jobs
     :param fingerprint_size: fingerprint size
     :param cutoff:for clustering
     :param radius: for generator
     :param n_estimators:  see xgboost
     :param max_depth:  see xgboost
     :param learning_rate: see xgboost
-    :param return_all: if True, return all
     :return:
     """
     ids = cluster(mols=mols,fingerprint_size=fingerprint_size,
                   cutoff=cutoff,generator=generator)
-    grid, X_train, X_test, y_train, y_test, groups_train, groups_test = \
-        fit(mols, vals, radius=radius,fingerprint_size=fingerprint_size,
-            n_jobs=njobs, generator=generator,groups=ids,
-            params={'max_depth': [max_depth], 'learning_rate': [learning_rate],
-                       'n_estimators': [n_estimators]},**kw)
+    y = vals
+    fp_generator = _sanitize_generator(generator, radius, fingerprint_size)
+    X = _mol_to_fingerprints(mols=mols, fp_generator=fp_generator)
+    _, X_train, X_test, y_train, y_test, groups_train, groups_test = \
+        train_test_split_grouped(X=X, y=y, groups=ids, validation_size=validation_size,
+                                 n_folds=1)
+    # Use "hist" for constructing the trees, with early stopping enabled.
+    grid = xgb.XGBRegressor(n_jobs=n_jobs,
+                            n_estimators=n_estimators,max_depth=max_depth,
+                            learning_rate=learning_rate, subsample=subsample,
+                            **kw)
+    grid.fit(X=X_train, y=y_train)
     generator_string = [ name for name,func in _all_names_and_generators()
                          if func is generator]
     assert len(generator_string) == 1
     generator_string = generator_string[0]
-    model = FittedModel(estimator=grid.best_estimator_,
+    model = FittedModel(estimator=grid,
                         fingerprint_size=fingerprint_size,
                         radius=radius,generator=generator_string,
                         X_train=X_train, X_test=X_test, y_train=y_train,
                         y_test=y_test, groups_train=groups_train,
                         groups_test=groups_test)
-    if return_all:
-        return model, X_train, X_test, y_train, y_test, groups_train, groups_test
-    else:
-        # just return the model
-        return model
+    # just return the model
+    return model
 
 
-
-def fit_mol_vals(mols,vals,return_all=False,n_jobs=1,
-                 fingerprint_size=1024,cutoff=0.6, radius=2,**kw):
-    """
-
-    :param mols: list N, molecules
-    :param vals:  list N, vals values
-    :param return_all: if true, returns all. Otherwise, just returns estimator
-    :return: see fit_clustered_model
-    """
-    to_ret = fit_clustered_model(mols, vals, njobs=n_jobs,return_all=return_all,
-                                 fingerprint_size=fingerprint_size,
-                                 cutoff=cutoff, radius=radius,**kw)
-    return to_ret
 
 
 
@@ -522,8 +544,8 @@ def cache_by_df(predictor_name,force=False,limit=None,n_jobs=2,
     :param predictor_name: valid key from load_medchem_data.name_to_load_functions
     :param force: if true, will re-fit and overwrite cache. otherwise uses cache if available
     :param limit: maximum number of molecules to use for fitting. only use for debugging
-    :param kw:  passed to fit_mol_vals
-    :return: see fit_mol_vals
+    :param kw:  passed to fit_clustered_model
+    :return: see fit_clustered_model
     """
     name_to_loads = load_medchem_data.name_to_load_functions()
     file_name = _predictor_path(predictor_name)
@@ -534,7 +556,7 @@ def cache_by_df(predictor_name,force=False,limit=None,n_jobs=2,
         mols = list(df["mol"])
         vals = list(df[predictor_name])
         assert mols is not None and vals is not None
-        model = fit_mol_vals(mols, vals, n_folds=2,n_jobs=n_jobs,**kw)
+        model = fit_clustered_model(mols, vals,n_jobs=n_jobs,**kw)
         if cache_model:
             # save the model
             model.save_model(file_name)
@@ -552,7 +574,11 @@ def _predictor_lambda(predictor_name,**kw):
     """
     predictor_properties = defaultdict(dict)
     # logD needs a special generator because it does a better job fitting
-    predictor_properties["log_d"] = {"generator":rdFingerprintGenerator.GetTopologicalTorsionGenerator}
+    predictor_properties["log_d"] = {'fingerprint_size':2048,
+                                     "subsample":0.5,'max_depth':3,
+                                     # could also use
+                                     # 'learning_rate':0.03,'n_estimators':5000
+                                     'learning_rate':0.03,'n_estimators':10000}
     kw_final = {"predictor_name":predictor_name,**(predictor_properties[predictor_name] | kw)}
     return lambda : cache_by_df(**kw_final)
 

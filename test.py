@@ -7,6 +7,7 @@ import tempfile
 import logging
 import pandas
 import numpy as np
+from scipy.stats import linregress
 from rdkit.Chem import MolFromSmiles, Descriptors, MolToInchi, MolToSmiles, MolToMolBlock
 from rdkit.Chem.inchi import MolFromInchi
 from rdkit import RDLogger
@@ -64,10 +65,11 @@ class MyTestCase(unittest.TestCase):
         """
         # make sure we can load and fit every model (just N=1000 to speed up)
         self.i_subtest = 0
-        for pred in [predict_medchem.log_p__predictor, predict_medchem.pk_a__predictor,
-                     predict_medchem.log_s__predictor, predict_medchem.log_d__predictor]:
+        for pred in [predict_medchem.log_d__predictor, predict_medchem.pk_a__predictor,
+                     predict_medchem.log_s__predictor, predict_medchem.log_p__predictor]:
             predictor = pred(limit=1000, force=True, verbose=True,
                              cache_model=False)
+            # test the saving and loading gives exactly the same predictions
             with tempfile.NamedTemporaryFile(suffix=".json") as f_tmp:
                 predictor.save_model(f_tmp.name)
                 post_save = predict_medchem.FittedModel().load_model(f_tmp.name)
@@ -294,6 +296,33 @@ class MyTestCase(unittest.TestCase):
         with self.subTest(i=self.i_subtest, msg="Calculating properties"):
             mol_cv.calculate_properties(fda["mol"],predictor_dict)
         self.i_subtest += 1
+
+    def test_999_predictor_R2(self):
+        """
+        test the predictor R2 looks OK
+        """
+        self.i_subtest = 0
+        predictors = [[predict_medchem.log_d__predictor,0.33,0.95],
+                      [predict_medchem.pk_a__predictor,0.65,1.40],
+                      [predict_medchem.log_s__predictor,0.57,1.26],
+                      [predict_medchem.log_p__predictor,0.64,0.83]
+                      ]
+        for p_func,r2_expected,mae_expected in predictors:
+            p = p_func()
+            X = p.X_test
+            y = p.y_test
+            y_pred = p.predict(X)
+            stats = linregress(x=y, y=y_pred)
+            r2 = stats.rvalue ** 2
+            mae = np.mean(np.abs(y - y_pred))
+            logger.info("For {:s}: R2={:.3f}, mae = {:.3f}".\
+                        format(str(p_func),r2, mae))
+            with self.subTest(i=self.i_subtest,msg=str(p_func)):
+                assert r2 >= r2_expected, r2
+            self.i_subtest += 1
+            with self.subTest(i=self.i_subtest,msg=str(p_func)):
+                assert mae <= mae_expected, mae
+            self.i_subtest += 1
 
 if __name__ == '__main__':
     unittest.main()
