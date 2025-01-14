@@ -9,6 +9,7 @@ import re
 import sys
 import subprocess
 
+from  rdkit.Chem.SaltRemover import SaltRemover
 import numpy as np
 import pandas
 import click
@@ -309,11 +310,11 @@ def _smiles_to_lilly_lines(smiles):
                 bad_lines.extend([r.strip() for r in bad_fh.readlines()])
     return good_lines, bad_lines
 
-def _smiles_to_lilly_dict(smiles,default_demerits=100):
+def _smiles_to_lilly_dict(smiles,hard_reject_demerits=100):
     """
 
     :param smiles: list of smiles of interest, size N
-    :param default_demerits: for "Hard rejected" molecules, use this as default
+    :param hard_reject_demerits: for "Hard rejected" molecules, use this as default
     demerit value
     :return: list of dictonaries, size N, matching smiles
     """
@@ -327,7 +328,7 @@ def _smiles_to_lilly_dict(smiles,default_demerits=100):
             # not given demerits but hard rejected
             # for things that are rejected without demerits, set to default
             b["Status"] = "Hard reject"
-            b["Demerits"] = default_demerits
+            b["Demerits"] = hard_reject_demerits
         else:
             b["Status"] = "Reject"
     all_dicts_ordered = sorted((good_dict + bad_dict), key=lambda x: x["id"])
@@ -335,13 +336,14 @@ def _smiles_to_lilly_dict(smiles,default_demerits=100):
     assert len(set(d["id"] for d in all_dicts_ordered)) == len(all_dicts_ordered)
     return all_dicts_ordered
 
-def _smiles_to_lilly(smiles):
+def _smiles_to_lilly(smiles,**kw):
     """
 
     :param smiles: list of smiles to pass to lilly
+    :param **kw: passedto _smiles_to_lilly_dict
     :return: list of dictionaries, size N, one per molecule
     """
-    return _smiles_to_lilly_dict(smiles)
+    return _smiles_to_lilly_dict(smiles,**kw)
 
 def mol_cv(mols,**kw):
     """
@@ -410,12 +412,15 @@ def _row_to_cns_mpo(row):
                    hbd=row["H-bond donors"],
                    pk_a=row["pk_a"])
 
-def calculate_properties(mols,predictor_dict,limit_to=None):
+def calculate_properties(mols,predictor_dict,limit_to=None,
+                         hard_reject_demerits=100):
     """
 
     :param mols: list N of rdkit Molecule objects
     :param predictor_dict: output of predict_medchem.all_predictors()
     :param limit_to_these: set of string to limit to
+    :param hard_reject_demerits: numebr of demerits to give to molecules that
+    the Lilly code 'hard rejects'
     :return:
     """
     if limit_to is None:
@@ -492,7 +497,7 @@ def calculate_properties(mols,predictor_dict,limit_to=None):
         # convert to smiles
         smiles = [MolToSmiles(m) for m in mols_not_null]
         if len(mols_not_null) > 0:
-            lilly_values = _smiles_to_lilly(smiles)
+            lilly_values = _smiles_to_lilly(smiles,hard_reject_demerits=hard_reject_demerits)
             idx_to_lilly_values =  dict(zip(i_not_null, lilly_values))
         else:
             idx_to_lilly_values = {}
@@ -631,7 +636,7 @@ def allowed_properties():
 
 
 def _read_and_normalize(input_file,structure_column,structure_type,
-                        normalize_molecules):
+                        normalize_molecules,desalt=False):
     """
     Convenience function for reading moleules from a file
 
@@ -639,6 +644,7 @@ def _read_and_normalize(input_file,structure_column,structure_type,
     :param structure_column:  name of sturcutre column
     :param structure_type:  one of MOL, SMILES, INCHI
     :param normalize_molecules:  if truem normalize all the molecules
+    :param desalt: if true, desalt
     :return:  list of molecules from file
     """
     df = pandas.read_csv(input_file)
@@ -653,10 +659,25 @@ def _read_and_normalize(input_file,structure_column,structure_type,
     if normalize_molecules:
         for m in mols:
             utilities.normalize_mol_inplace(m)
+    if desalt:
+        # remove the salt
+        remover = SaltRemover()
+        m_tmp = []
+        for m in mols:
+            if m is None:
+                res = None
+            else:
+                try:
+                    res = remover.StripMol(m,dontRemoveEverything=True)
+                except (ValueError, TypeError):
+                    # if can't remove salt
+                    res = m
+            m_tmp.append(res)
+        mols = m_tmp
     return mols
 
 def _properties_helper(input_file,structure_column,structure_type,output_file,
-                       limit_to,normalize_molecules):
+                       limit_to,normalize_molecules,desalt,hard_reject_demerits=100):
     """
 
     :param input_file: input file csv
@@ -664,6 +685,10 @@ def _properties_helper(input_file,structure_column,structure_type,output_file,
     :param structure_type: see properties
     :param output_file: see properties
     :param limit_to: see properties
+    :param desalt: if true, desalt
+    :param normalize_molecules: if true, normalize molecules
+    :param hard_reject_demerits: number of demerits to give molecules that Lilly
+    hard rejects
     :return: nothing
     """
     if output_file is None:
@@ -673,8 +698,9 @@ def _properties_helper(input_file,structure_column,structure_type,output_file,
     else:
         limit_list = [s.strip() for s in limit_to.split(",")]
     mols = _read_and_normalize(input_file,structure_column,structure_type,
-                               normalize_molecules)
-    df = pandas.DataFrame(mol_cv(mols,limit_to=limit_list))
+                               normalize_molecules,desalt)
+    df = pandas.DataFrame(mol_cv(mols,limit_to=limit_list,
+                                 hard_reject_demerits=hard_reject_demerits))
     df.to_csv(output_file,index=False)
 
 
@@ -692,8 +718,12 @@ def _properties_helper(input_file,structure_column,structure_type,output_file,
               default=None,help="where to output the file")
 @click.option("--normalize_molecules",required=False,type=BoolType(),
               default="FALSE",help="Whether to normalize molecule prior to fitting")
+@click.option('--desalt',required=False,type=BoolType(),
+              default="FALSE",help="Whether to desalt prior to calculating everything")
 @click.option("--limit_to",required=False,type=str,default=None,
               help="CSV of list of allowed properties (see allowed-properties command). Only calculate these")
+@click.option("--hard_reject_demerits",required=False,type=float,default=100,
+              help="Demerits to give molecules which lilly rules 'hard reject'")
 def properties(**kw):
     """
 

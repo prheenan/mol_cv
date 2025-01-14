@@ -125,8 +125,8 @@ def cv_plot_fig(row,image_mol,turn_imshow_axis_off=True,w_pad=-2.5,
     name_vals_good = [
         ["CNS MPO", row["cns_mpo"] / 6],
         ["QED", row["QED"]],
-        ["-cLogS", -row["log_s"]],
-        ["-cLogD", -row["log_d"]],
+        ["-cLogS", -row["log_s"]/6],
+        ["fsp3", row["Fraction of carbons SP3 hybridized"]],
     ]
 
     theta = radar_factory(len(name_vals_bad), frame='polygon')
